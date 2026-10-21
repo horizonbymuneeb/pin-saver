@@ -38,7 +38,9 @@ extension is ~2,900 lines of plain JavaScript.
 
 ### From a release
 
-1. Unzip `pin-saver-extension.zip`.
+Grab **[pin-saver-extension.zip](https://github.com/horizonbymuneeb/pin-saver/releases/download/v1.0.0/pin-saver-extension.zip)** (37 KB, 19 files), then:
+
+1. Unzip it.
 2. Open `chrome://extensions`.
 3. Turn on **Developer mode** (top right).
 4. Click **Load unpacked** and select the unzipped folder.
@@ -52,6 +54,12 @@ cd pin-saver
 npm install          # dev tooling only; the extension itself has no deps
 npm run package      # writes ../pin-saver-extension.zip
 ```
+
+### Chrome Web Store
+
+The extension is packaged for the Chrome Web Store. A release asset is
+published at
+[releases/download/v1.0.0](https://github.com/horizonbymuneeb/pin-saver/releases/download/v1.0.0/pin-saver-extension.zip).
 
 ---
 
