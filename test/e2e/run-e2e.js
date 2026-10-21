@@ -141,6 +141,25 @@ async function waitForFile(magic, timeoutMs) {
   ]);
 
   const page = await context.newPage();
+
+  /** List the entry names inside a stored (uncompressed) ZIP archive. */
+  function zipEntryNames(bytes) {
+    const buf = Buffer.isBuffer(bytes)
+      ? bytes
+      : Buffer.from(bytes.buffer, bytes.byteOffset || 0, bytes.length);
+    const names = [];
+    let at = 0;
+    while (at < buf.length - 4) {
+      if (buf.readUInt32LE(at) !== 0x04034b50) break;
+      const nameLen = buf.readUInt16LE(at + 26);
+      const extra = buf.readUInt16LE(at + 28);
+      const size = buf.readUInt32LE(at + 18);
+      names.push(buf.slice(at + 30, at + 30 + nameLen).toString("utf8"));
+      at += 30 + nameLen + extra + size;
+    }
+    return names;
+  }
+
   /**
    * Read one text entry out of a stored (uncompressed) ZIP archive.
    * The extension writes store-only archives, so the bytes are plain text.
@@ -213,11 +232,14 @@ async function waitForFile(magic, timeoutMs) {
   record("normal board shows no signed-out notice", signedInNotices === 0, signedInNotices + " notices");
   record("panel offers PDF", panelText.includes("PDF"));
 
-  const buttons = page.locator("#pinsaver-panel .pinsaver-btn");
+  // The panel now also carries the pin-mode section, so the board actions are
+  // picked by their name rather than by position.
+  const boardZipBtn = page.locator("#pinsaver-panel .pinsaver-btn", { hasText: /board as ZIP/i });
+  const boardPdfBtn = page.locator("#pinsaver-panel .pinsaver-btn", { hasText: /board as PDF/i });
 
   // --- ZIP ---------------------------------------------------------------
   const beforeZip = mock.log.length;
-  await buttons.nth(0).click(); // "Download board as ZIP"
+  await boardZipBtn.first().click(); // "Download board as ZIP"
 
   const zip = await waitForFile(Buffer.from([0x50, 0x4b, 0x03, 0x04]), 90000);
   record("ZIP produced and saved", Boolean(zip), zip ? zip.bytes.length + " bytes" : "none");
@@ -261,6 +283,21 @@ async function waitForFile(magic, timeoutMs) {
       const entries = zip.bytes.readUInt16LE(eocdAt + 10);
       // 6 image pins + 1 video pin + _metadata.csv + _metadata.json
       record("ZIP holds every pin plus metadata", entries >= 11, entries + " entries");
+
+  // A message may not exceed 64 MiB. Two 40 MiB assets used to travel back
+  // from the worker as base64 and killed the export with "Message exceeded
+  // maximum allowed size of 64MiB". The bytes must never go through a
+  // message at all.
+  const names = zipEntryNames(zip.bytes);
+  const bigEntries = names.filter(function (n) {
+    return /pin[ _]4\b/.test(n) || /pin[ _]5\b/.test(n);
+  });
+  record(
+    "media larger than a message can carry still downloads",
+    bigEntries.length >= 2 && zip.bytes.length > 40 * 1024 * 1024,
+    bigEntries.length + " oversized entries, archive " +
+      Math.round(zip.bytes.length / 1048576) + " MiB",
+  );
       // One image is served 503 twice before succeeding; a retry must recover it
       // instead of silently dropping the pin.
       record(
@@ -299,7 +336,7 @@ async function waitForFile(magic, timeoutMs) {
   // --- PDF ---------------------------------------------------------------
   fs.rmSync(DOWNLOADS, { recursive: true, force: true });
   fs.mkdirSync(DOWNLOADS, { recursive: true });
-  await buttons.nth(1).click(); // "Download board as PDF"
+  await boardPdfBtn.first().click(); // "Download board as PDF"
 
   const pdf = await waitForFile(Buffer.from("%PDF"), 90000);
   record("PDF produced and saved", Boolean(pdf), pdf ? pdf.bytes.length + " bytes" : "none");
@@ -428,7 +465,7 @@ async function waitForFile(magic, timeoutMs) {
   });
   await page.waitForSelector("#pinsaver-panel", { timeout: 20000 });
   await openTab("board");
-  await page.locator("#pinsaver-panel .pinsaver-btn").nth(0).click(); // ZIP
+  await boardZipBtn.first().click(); // ZIP
   const cancelVisible = await page
     .waitForSelector(".pinsaver-cancel:not([hidden])", { timeout: 20000 })
     .then(() => true)
@@ -449,6 +486,41 @@ async function waitForFile(magic, timeoutMs) {
       return !f.endsWith(".crdownload");
     });
     record("a cancelled export saves no file", afterCancel.length === 0, afterCancel.join(", ") || "none");
+  }
+
+  // --- sections ----------------------------------------------------------
+  // A board with sections can export one section on its own.
+  await page.goto("https://www.pinterest.com/pinterest/girls-night-in/", {
+    waitUntil: "domcontentloaded",
+    timeout: 30000,
+  });
+  await page.waitForSelector("#pinsaver-panel", { timeout: 20000 });
+  await openTab("sections");
+  await page.waitForTimeout(1500);
+
+  const sectionRows = page.locator("#pinsaver-panel .pinsaver-sections__row");
+  const sectionCount = await sectionRows.count();
+  record("the panel lists the board's sections", sectionCount >= 1, sectionCount + " sections");
+
+  if (sectionCount >= 1) {
+    fs.rmSync(DOWNLOADS, { recursive: true, force: true });
+    fs.mkdirSync(DOWNLOADS, { recursive: true });
+    await sectionRows.first().locator(".pinsaver-sections__btn").click();
+    const secZip = await waitForFile(Buffer.from([0x50, 0x4b, 0x03, 0x04]), 90000);
+    const secStatus = await page.locator("#pinsaver-panel .pinsaver-status").innerText();
+    record(
+      "one section downloads as its own archive",
+      Boolean(secZip),
+      secZip ? secZip.bytes.length + " bytes" : "status: " + JSON.stringify(secStatus.trim()),
+    );
+    if (secZip) {
+      const names = zipEntryNames(secZip.bytes);
+      record(
+        "the section archive keeps the section folder",
+        names.some(function (n) { return /Section/.test(n); }),
+        names.slice(0, 3).join(", "),
+      );
+    }
   }
 
   // --- alternate DOM -----------------------------------------------------
@@ -517,6 +589,37 @@ async function waitForFile(magic, timeoutMs) {
     JSON.stringify(countryStatus.trim().slice(0, 60)),
   );
 
+  // --- the panel follows the route -----------------------------------------
+  // Pinterest is an SPA: clicking a pin moves to /pin/<id>/ without a reload.
+  // The panel used to keep offering "Download board as ZIP" there.
+  await page.goto("https://www.pinterest.com/pinterest/girls-night-in/", {
+    waitUntil: "domcontentloaded",
+    timeout: 30000,
+  });
+  await page.waitForSelector("#pinsaver-panel", { timeout: 20000 });
+  const boardZip = page.locator('#pinsaver-panel .pinsaver-btn', { hasText: /ZIP/i });
+  record(
+    "the board actions are offered on a board",
+    (await boardZip.count()) > 0 && (await boardZip.first().isVisible()),
+  );
+
+  await page.goto("https://www.pinterest.com/pin/9003/", {
+    waitUntil: "domcontentloaded",
+    timeout: 30000,
+  });
+  await page.waitForTimeout(1200);
+  const boardZipOnPin = page.locator('#pinsaver-panel .pinsaver-btn', { hasText: /board as ZIP/i });
+  const pinAction = page.locator('#pinsaver-panel .pinsaver-btn', { hasText: /Download pin/i });
+  const boardStillOffered =
+    (await boardZipOnPin.count()) > 0 && (await boardZipOnPin.first().isVisible().catch(() => false));
+  const pinOffered =
+    (await pinAction.count()) > 0 && (await pinAction.first().isVisible().catch(() => false));
+  record(
+    "the pin page offers the pin download, not the board download",
+    pinOffered && !boardStillOffered,
+    "pin action: " + pinOffered + ", board action: " + boardStillOffered,
+  );
+
   // --- popup contract ----------------------------------------------------
   // The toolbar popup cannot touch the page directly: it sends
   // {action:"downloadBoard"} to the content script. Neither the popup UI nor
@@ -576,6 +679,18 @@ async function waitForFile(magic, timeoutMs) {
   }
   record("popup renders its UI", popupText.indexOf("Pin Saver") !== -1);
   record("popup reports a status", popupText.length > 0, popupText.replace(/\s+/g, " ").slice(0, 60));
+  record(
+    "the popup states that nothing is collected",
+    /collects nothing|no telemetry|collects no data/i.test(popupText),
+    /collects nothing|no telemetry|collects no data/i.test(popupText)
+      ? "privacy note present"
+      : "missing",
+  );
+  record(
+    "the popup offers a board export",
+    /ZIP|PDF/i.test(popupText),
+    (popupText.match(/Download[^\n]*/g) || []).join(" / ").slice(0, 60),
+  );
   const popupBad = popupErrors.filter((t) => !/favicon|net::ERR/i.test(t));
   record("popup has no console errors", popupBad.length === 0, popupBad.slice(0, 2).join(" | ") || "none");
   await popup.close();
@@ -587,7 +702,7 @@ async function waitForFile(magic, timeoutMs) {
   let allowedTransient = mock.stats ? mock.stats.injectedFailures : 0;
   const badConsole = consoleErrors.filter(function (t) {
     if (/favicon|net::ERR/i.test(t)) return false;
-    if (allowedTransient > 0 && /500 \(Internal Server Error\)/.test(t)) {
+    if (allowedTransient > 0 && /50[03] \((Internal Server Error|Service Unavailable)\)/.test(t)) {
       allowedTransient--;
       return false;
     }

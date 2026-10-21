@@ -11,6 +11,15 @@
  * `aria-selected`, so a screen reader announces the same three sections a
  * sighted user sees.
  *
+ * Pinterest is a single-page app, so the panel outlives the page it was
+ * created on: clicking a pin swaps the board for a single pin without a
+ * reload, while the panel element stays in the DOM. The panel therefore has
+ * two modes. In `board` mode the tab strip and its three sections are shown
+ * exactly as before. In `pin` mode the strip is hidden and a pin-specific
+ * view takes its place (title, "Download pin", the JPEG/PNG format row and
+ * a "← Back to board" button), so a single-pin page never offers
+ * "Download board as ZIP".
+ *
  * This module owns the DOM only. Every action is reported back through the
  * callbacks handed to `create()`, so `content.js` stays the single place
  * that knows how a download actually works.
@@ -24,6 +33,7 @@
   const TABS = [
     { id: "board", label: "Board" },
     { id: "selected", label: "Selected" },
+    { id: "sections", label: "Sections" },
     { id: "about", label: "About" },
   ];
 
@@ -35,6 +45,20 @@
   const PRIVACY_TEXT =
     "Collects no data. Nothing is uploaded; every export happens in your browser.";
 
+  /**
+   * The two shapes the panel can take.
+   *
+   * `board` shows the tab strip (Board | Selected | About). `pin` hides the
+   * strip and shows the single-pin view instead.
+   */
+  const MODES = { BOARD: "board", PIN: "pin" };
+
+  /** Shown in the pin view when the pin has no usable title. */
+  const DEFAULT_PIN_TITLE = "Untitled pin";
+
+  /** Download formats the pin view can offer. */
+  const PIN_FORMATS = ["original", "jpeg", "png"];
+
   /** Build a DOM node with an optional class name and text. */
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -45,7 +69,11 @@
 
   /** Call an optional callback, ignoring anything that is not a function. */
   function call(fn) {
-    if (typeof fn === "function") fn();
+    if (typeof fn !== "function") return;
+    // Forward the extra arguments: a callback such as onDownloadSection needs
+    // to know which section was clicked.
+    const args = Array.prototype.slice.call(arguments, 1);
+    fn.apply(null, args);
   }
 
   /**
@@ -63,6 +91,19 @@
     return null;
   }
 
+  /**
+   * Map a mode name onto its internal id.
+   *
+   * Only "pin" selects the pin view; anything else (including a missing or
+   * malformed value) falls back to the board view, so a stale caller can
+   * never leave the panel in a half-switched state.
+   */
+  function normalizeMode(mode) {
+    if (typeof mode !== "string") return MODES.BOARD;
+    const id = mode.trim().toLowerCase();
+    return id === MODES.PIN ? MODES.PIN : MODES.BOARD;
+  }
+
   PK.PanelUI = {
     /**
      * Build the panel and attach it to the page.
@@ -76,6 +117,11 @@
      * @param {function} options.onZipSelected called when "ZIP selected" is pressed
      * @param {function} [options.onCancel]    called when "Cancel" is pressed
      * @param {function} [options.onDismiss]   called when the panel is closed
+     * @param {function} [options.onDownloadSection] called with a section
+     * @param {function} [options.onDownloadPin] called with a format
+     *        ("original", "jpeg" or "png") when a pin download button is pressed
+     * @param {function} [options.onBackToBoard] called when "← Back to board"
+     *        is pressed; the panel also returns to board mode by itself
      * @returns {Object} api
      */
     create(options) {
@@ -86,6 +132,7 @@
       let selectedCount = 0;
       let busy = false;
       let activeTab = TABS[0].id;
+      let mode = MODES.BOARD;
       let destroyed = false;
 
       // ------------------------------------------------------------- root
@@ -150,6 +197,74 @@
       const body = el("div", "pinsaver-panel__body");
       panel.appendChild(body);
 
+      // --- Pin view: what the panel shows on a single-pin page.
+      //
+      // It is built once and only revealed in pin mode; the tab strip is
+      // hidden in that mode, so the board sections never show next to the
+      // pin-specific actions.
+
+      const pinPanel = el("div", "pinsaver-pin");
+      pinPanel.setAttribute("role", "group");
+      pinPanel.setAttribute("aria-label", "Pin download");
+      pinPanel.dataset.pinsaverPinPanel = "1";
+      pinPanel.hidden = true;
+
+      // Heading area: the "Pin" label plus the pin's own title.
+      const pinHeading = el("div", "pinsaver-pin__heading");
+      const pinEyebrow = el("div", "pinsaver-pin__eyebrow", "Pin");
+      const pinTitle = el("div", "pinsaver-pin__title");
+      pinTitle.dataset.pinsaverPinTitle = "1";
+      pinHeading.appendChild(pinEyebrow);
+      pinHeading.appendChild(pinTitle);
+      pinPanel.appendChild(pinHeading);
+
+      // The primary action: the pin exactly as Pinterest serves it.
+      const pinDownloadBtn = el("button", "pinsaver-btn pinsaver-pin__primary", "Download pin");
+      pinDownloadBtn.type = "button";
+      pinDownloadBtn.dataset.pinsaverPinDownload = "original";
+      pinPanel.appendChild(pinDownloadBtn);
+
+      // The format row: the same image, re-encoded as JPEG or PNG.
+      const pinFormats = el("div", "pinsaver-pin__formats");
+      const pinFormatBtns = {};
+      PIN_FORMATS.forEach(function (format) {
+        if (format === "original") return; // already the primary button
+        const label = format === "jpeg" ? "Download as JPEG" : "Download as PNG";
+        const btn = el("button", "pinsaver-btn pinsaver-btn--ghost pinsaver-pin__format", label);
+        btn.type = "button";
+        btn.dataset.pinsaverPinDownload = format;
+        pinFormats.appendChild(btn);
+        pinFormatBtns[format] = btn;
+      });
+      pinPanel.appendChild(pinFormats);
+
+      // Back to the board: the only way out of the pin view.
+      const pinBackBtn = el(
+        "button",
+        "pinsaver-btn pinsaver-btn--ghost pinsaver-pin__back",
+        "← Back to board",
+      );
+      pinBackBtn.type = "button";
+      pinBackBtn.dataset.pinsaverPinBack = "1";
+      pinPanel.appendChild(pinBackBtn);
+
+      // Read-only line with the pin's id and/or URL.
+      const pinMeta = el("div", "pinsaver-pin__meta");
+      pinMeta.dataset.pinsaverPinMeta = "1";
+      const pinId = el("span", "pinsaver-pin__id");
+      pinId.dataset.pinsaverPinId = "1";
+      const pinSep = el("span", "pinsaver-pin__sep", " · ");
+      const pinUrl = el("span", "pinsaver-pin__url");
+      pinUrl.dataset.pinsaverPinUrl = "1";
+      pinMeta.appendChild(pinId);
+      pinMeta.appendChild(pinSep);
+      pinMeta.appendChild(pinUrl);
+      pinMeta.hidden = true;
+      pinPanel.appendChild(pinMeta);
+
+      // The pin view sits in the content area, above the tab sections.
+      body.appendChild(pinPanel);
+
       // --- Board tab: the two primary actions.
 
       const zipBtn = el("button", "pinsaver-btn", "Download board as ZIP");
@@ -202,6 +317,15 @@
       const aboutPrivacy = el("p", "pinsaver-about__privacy", PRIVACY_TEXT);
       bodies.about.appendChild(aboutPrivacy);
 
+      // --- Sections tab: the board's sections, each downloadable on its own.
+
+      const sectionsNote = el("p", "pinsaver-sections__note", "Loading the board's sections…");
+      bodies.sections.appendChild(sectionsNote);
+
+      const sectionsList = el("div", "pinsaver-sections__list");
+      sectionsList.dataset.pinsaverSections = "1";
+      bodies.sections.appendChild(sectionsList);
+
       TABS.forEach(function (def) {
         body.appendChild(bodies[def.id]);
       });
@@ -235,6 +359,24 @@
       });
       cancelBtn.addEventListener("click", function () {
         call(opts.onCancel);
+      });
+
+      // A pin download reports the chosen format back to the caller.
+      pinDownloadBtn.addEventListener("click", function () {
+        reportPinDownload("original");
+      });
+      Object.keys(pinFormatBtns).forEach(function (format) {
+        pinFormatBtns[format].addEventListener("click", function () {
+          reportPinDownload(format);
+        });
+      });
+
+      // "← Back to board" returns the panel to the board view itself, and
+      // then tells the caller, so the panel can never get stuck in pin mode
+      // even if the callback throws.
+      pinBackBtn.addEventListener("click", function () {
+        setMode(MODES.BOARD);
+        call(opts.onBackToBoard);
       });
 
       closeBtn.addEventListener("click", function () {
@@ -304,6 +446,35 @@
         });
       }
 
+      // --------------------------------------------------------- mode state
+
+      /** Report a pin download with the format the user picked. */
+      function reportPinDownload(format) {
+        if (typeof opts.onDownloadPin === "function") opts.onDownloadPin(format);
+      }
+
+      /**
+       * Paint the current mode onto the DOM.
+       *
+       * Board mode shows the tab strip and the active tab; pin mode hides
+       * the strip and every board section, and shows the pin view instead.
+       */
+      function applyMode() {
+        const isPin = mode === MODES.PIN;
+        strip.hidden = isPin;
+        pinPanel.hidden = !isPin;
+        panel.classList.toggle("pinsaver-panel--pin", isPin);
+        if (isPin) {
+          // The board sections stay out of the way while the pin view is up.
+          TABS.forEach(function (def) {
+            bodies[def.id].hidden = true;
+          });
+        } else {
+          // Restore whichever tab was active before the pin view appeared.
+          activate(activeTab);
+        }
+      }
+
       /**
        * Apply the busy/selection state to every action button.
        *
@@ -316,6 +487,11 @@
         selectBtn.disabled = busy;
         selZipBtn.disabled = busy || selectedCount === 0;
         cancelBtn.disabled = !busy;
+        // The pin view follows the same rule: no new export while one runs.
+        pinDownloadBtn.disabled = busy;
+        Object.keys(pinFormatBtns).forEach(function (format) {
+          pinFormatBtns[format].disabled = busy;
+        });
       }
 
       // ------------------------------------------------------------- api
@@ -347,7 +523,76 @@
       }
 
       function setTab(name) {
+        // In pin mode the tab strip is hidden, so switching tabs would be
+        // invisible. The call is ignored instead of throwing.
+        if (mode === MODES.PIN) return;
         activate(name);
+      }
+
+      /**
+       * Switch the panel between the board view and the pin view.
+       *
+       * @param {string} next "board" or "pin"; anything else means board
+       */
+      function setMode(next) {
+        mode = normalizeMode(next);
+        applyMode();
+      }
+
+      /**
+       * Update the text of the pin view.
+       *
+       * Every field is optional: a missing or empty title falls back to a
+       * generic label, and the id/URL line disappears when there is nothing
+       * to show. This never throws, whatever the caller passes in.
+       *
+       * @param {Object} info `{ title, id, url }`
+       */
+      /**
+       * Show the board's sections.
+       *
+       * @param {Array<{id: string, name: string, pinCount: number|null}>} list
+       */
+      function setSections(list) {
+        if (!sectionsList) return;
+        sectionsList.textContent = "";
+        const rows = Array.isArray(list) ? list : [];
+        if (!rows.length) {
+          sectionsNote.textContent = "This board has no sections.";
+          return;
+        }
+        sectionsNote.textContent = "Download one section on its own:";
+        rows.forEach(function (section) {
+          const row = el("div", "pinsaver-sections__row");
+          const label = el("span", "pinsaver-sections__name", section && section.name ? section.name : "Section");
+          if (section && section.pinCount != null) {
+            const count = el("span", "pinsaver-sections__count", String(section.pinCount));
+            row.appendChild(count);
+          }
+          row.appendChild(label);
+          const btn = el("button", "pinsaver-btn pinsaver-btn--ghost pinsaver-sections__btn", "↓");
+          btn.type = "button";
+          btn.title = "Download this section";
+          btn.addEventListener("click", function () {
+            call(opts.onDownloadSection, section);
+          });
+          row.appendChild(btn);
+          sectionsList.appendChild(row);
+        });
+      }
+
+      function setPinInfo(info) {
+        const data = info && typeof info === "object" ? info : {};
+
+        const title = data.title == null ? "" : String(data.title).trim();
+        const id = data.id == null ? "" : String(data.id).trim();
+        const url = data.url == null ? "" : String(data.url).trim();
+
+        pinTitle.textContent = title || DEFAULT_PIN_TITLE;
+        pinId.textContent = id;
+        pinUrl.textContent = url;
+        pinSep.hidden = !(id && url);
+        pinMeta.hidden = !(id || url);
       }
 
       function show() {
@@ -372,13 +617,16 @@
         setBusy: setBusy,
         setSelectedCount: setSelectedCount,
         setTab: setTab,
+        setMode: setMode,
+        setPinInfo: setPinInfo,
+        setSections: setSections,
         show: show,
         hide: hide,
         destroy: destroy,
       };
 
       mount();
-      activate(activeTab);
+      applyMode();
       syncDisabled();
 
       return api;

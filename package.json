@@ -4,7 +4,7 @@
   "private": true,
   "description": "Pinterest board downloader Chrome extension (clean-room implementation)",
   "scripts": {
-    "test": "node --test test/unit.test.js test/integration.test.js test/pdf.test.js test/video.test.js test/api-hardness.test.js test/batch-fetch.test.js",
+    "test": "node --test test/unit.test.js test/integration.test.js test/pdf.test.js test/video.test.js test/api-hardness.test.js test/batch-fetch.test.js test/convert.test.js test/sections.test.js",
     "test:unit": "node --test test/unit.test.js",
     "test:integration": "node --test test/integration.test.js",
     "check": "node scripts/check.js",

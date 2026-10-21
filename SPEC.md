@@ -389,7 +389,7 @@ The implementation writes the PDF itself — no dependency, no canvas capture:
 
 | Check | Command | Result |
 |-------|---------|--------|
-| Unit + integration + PDF + video + API-hardness + batch tests | `npm test` | **139 passing** |
+| Unit + integration + PDF + video + API-hardness + batch + convert + sections tests | `npm test` | **176 passing** |
 | Structural validation | `npm run check` | loadable |
 | ZIP opens in a real unzip tool | `unzip -t` | no errors |
 | CRC-32 implementation | known vector `123456789` | `0xCBF43926` |
@@ -429,7 +429,7 @@ The implementation writes the PDF itself — no dependency, no canvas capture:
 | Missing board | `Pinterest API error: Board not found. [40]`, styled as an error |
 | Page / console errors | none |
 
-`npm run test:e2e` → **52/52 checks**.
+`npm run test:e2e` → **60/60 checks**.
 
 ### Live against production Pinterest
 

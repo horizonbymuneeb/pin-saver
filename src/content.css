@@ -366,3 +366,113 @@
 .pinsaver-cancel[hidden] {
   display: none;
 }
+
+/* ------------------------------------------------------------------
+   Pin mode
+   On a single-pin page the tab strip is hidden and this view takes
+   its place: the pin's title, "Download pin", the JPEG/PNG format
+   row and a way back to the board.
+   ------------------------------------------------------------------ */
+
+/* The strip is a flex row, so the `hidden` attribute alone would not
+   hide it: the author rule has to win over the user-agent rule. */
+.pinsaver-tabs[hidden] {
+  display: none;
+}
+
+/* The pin view needs a little more room than the three short tabs. */
+.pinsaver-panel--pin {
+  width: 268px;
+}
+
+.pinsaver-pin {
+  display: block;
+  margin-bottom: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #f6f6f6;
+}
+
+.pinsaver-pin[hidden] {
+  display: none;
+}
+
+.pinsaver-pin__heading {
+  margin-bottom: 10px;
+}
+
+.pinsaver-pin__eyebrow {
+  color: #e60023;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pinsaver-pin__title {
+  margin-top: 2px;
+  color: #111111;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.pinsaver-pin__primary {
+  margin-bottom: 8px;
+}
+
+/* The format row: two equally wide secondary buttons. */
+.pinsaver-pin__formats {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.pinsaver-pin__format {
+  flex: 1 1 0;
+  width: auto;
+  margin-bottom: 0;
+  padding: 8px 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pinsaver-pin__back {
+  margin-bottom: 8px;
+  background: #ffffff;
+  color: #e60023;
+  box-shadow: inset 0 0 0 1px #e60023;
+}
+
+.pinsaver-pin__back:hover {
+  filter: none;
+  background: #fff1f3;
+}
+
+/* The read-only id/URL line. */
+.pinsaver-pin__meta {
+  overflow: hidden;
+  color: #777777;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pinsaver-pin__meta[hidden] {
+  display: none;
+}
+
+.pinsaver-pin__id {
+  font-weight: 600;
+}
+
+.pinsaver-pin__sep[hidden] {
+  display: none;
+}
+
+.pinsaver-pin__url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

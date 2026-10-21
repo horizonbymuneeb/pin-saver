@@ -2,36 +2,86 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Pin Saver</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
-  <body>
-    <header class="head">
-      <img src="../icons/icon48.png" alt="" width="28" height="28" />
-      <div>
-        <h1>Pin Saver</h1>
-        <p class="sub">Pinterest board downloader</p>
-      </div>
-    </header>
+  <body class="pinsaver-body">
+    <div class="pinsaver-card">
+      <header class="pinsaver-header">
+        <img
+          class="pinsaver-header__icon"
+          src="../icons/icon48.png"
+          alt=""
+          width="26"
+          height="26"
+        />
+        <div class="pinsaver-header__text">
+          <h1 class="pinsaver-header__title">Pin Saver</h1>
+          <p class="pinsaver-header__sub">Save Pinterest boards and pins as ZIP or PDF</p>
+        </div>
+      </header>
 
-    <section id="on-board" hidden>
-      <button id="btn-zip" class="primary">Download whole board as ZIP</button>
-      <p class="hint">
-        Open a board, then use the floating panel on the page for selection.
-      </p>
-    </section>
+      <!-- What this tab is. Filled in by popup.js. -->
+      <section class="pinsaver-context" id="pinsaver-context">
+        <p class="pinsaver-context__kicker" id="pinsaver-kicker">Checking this tab…</p>
+        <h2 class="pinsaver-context__title" id="pinsaver-title">&nbsp;</h2>
+        <p class="pinsaver-context__detail" id="pinsaver-detail">&nbsp;</p>
+        <a
+          class="pinsaver-link"
+          id="pinsaver-board-link"
+          href="https://www.pinterest.com/"
+          target="_blank"
+          rel="noopener noreferrer"
+          hidden
+          >Open board in a new tab</a
+        >
+      </section>
 
-    <section id="off-board" hidden>
-      <p class="hint">
-        Open a Pinterest board to download it. On any pin you can also click the
-        red <b>&darr;</b> button to save the original file.
-      </p>
-      <button id="btn-open" class="secondary">Open Pinterest</button>
-    </section>
+      <!-- The actions. Exactly one context shows them at a time. -->
+      <section class="pinsaver-actions" id="pinsaver-actions">
+        <button
+          type="button"
+          class="pinsaver-btn pinsaver-btn--primary"
+          id="pinsaver-btn-zip"
+          hidden
+        >
+          Download board as ZIP
+        </button>
+        <button
+          type="button"
+          class="pinsaver-btn pinsaver-btn--secondary"
+          id="pinsaver-btn-pdf"
+          hidden
+        >
+          Download board as PDF
+        </button>
+        <button
+          type="button"
+          class="pinsaver-btn pinsaver-btn--primary"
+          id="pinsaver-btn-pin"
+          hidden
+        >
+          Download this pin
+        </button>
+        <button
+          type="button"
+          class="pinsaver-btn pinsaver-btn--secondary"
+          id="pinsaver-btn-open"
+          hidden
+        >
+          Open Pinterest
+        </button>
+      </section>
 
-    <footer class="foot">
-      <span id="status">Ready</span>
-    </footer>
+      <!-- Result of the last action. Errors show here too. -->
+      <p class="pinsaver-status" id="pinsaver-status" role="status" aria-live="polite"></p>
+
+      <footer class="pinsaver-footer">
+        <p class="pinsaver-footer__note">Collects nothing. Talks only to Pinterest.</p>
+        <p class="pinsaver-footer__version" id="pinsaver-version"></p>
+      </footer>
+    </div>
 
     <script src="popup.js"></script>
   </body>

@@ -213,6 +213,7 @@ const MAX_BATCH_ITEMS = 32;
 /** Every media request that is currently in flight, so it can be aborted. */
 const inFlightControllers = new Set();
 
+
 /**
  * Cancellation generation.
  *
@@ -492,6 +493,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })
       .then((text) => sendResponse({ ok: true, text: text }))
       .catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
+    return true;
+  }
+
+  if (action === "downloadArchive") {
+    // The finished archive is handed over as a blob URL.
+    //
+    // It used to travel as base64 inside a message, which has two hard
+    // limits: a message may not exceed 64 MiB, and building the base64 of a
+    // large archive in JavaScript runs into V8's maximum string length
+    // ("Invalid string length"). A blob URL is a short string and the browser
+    // streams the bytes to disk, so neither limit applies.
+    const url = message.url;
+    if (typeof url !== "string" || !/^blob:/.test(url)) {
+      sendResponse({ ok: false, error: "Refusing non-blob archive URL" });
+      return false;
+    }
+    chrome.downloads.download(
+      { url: url, filename: message.filename, saveAs: false, conflictAction: "uniquify" },
+      (downloadId) => {
+        const err = chrome.runtime.lastError;
+        if (err) sendResponse({ ok: false, error: err.message });
+        else sendResponse({ ok: true, downloadId: downloadId });
+      },
+    );
     return true;
   }
 

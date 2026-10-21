@@ -45,6 +45,8 @@
         "src/lib/pdf.js",
         "src/lib/video.js",
         "src/lib/api.js",
+        "src/lib/convert.js",
+        "src/lib/sections.js",
         "src/content.js"
       ],
       "css": [

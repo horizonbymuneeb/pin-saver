@@ -115,13 +115,26 @@ let feedFailures = 0;
 const FEED_FAILURES = 1;
 /** Number of deliberately injected transient failures, so the test can expect them. */
 const stats = { injectedFailures: 0 };
+/**
+ * A deliberately huge asset. The bytes used to travel back from the worker as
+ * base64 inside a message, and a message may not exceed 64 MiB — two of these
+ * broke the export with "Message exceeded maximum allowed size of 64MiB".
+ */
+const BIG_BYTES = 26 * 1024 * 1024;
 /** When set, media answers slowly — used to test cancelling a long export. */
 let mediaDelayMs = 0;
 const FLAKY_PATH = "/originals/aa/bb/cc/pin3.jpg";
 const FLAKY_FAILURES = 2;
 
-/** Pin 6 is a PNG so the PDF writer has to convert it to JPEG. */
+/**
+ * Pin 6 is a PNG so the PDF writer has to convert it to JPEG, and pins 4 and 5
+ * point at an asset that is larger than a single message may carry.
+ */
 function buildImages(i) {
+  if (i === 4 || i === 5) {
+    const url = "https://i.pinimg.com/originals/big/big/bigpin" + i + ".jpg";
+    return { orig: { url: url }, "736x": { url: url }, "236x": { url: url } };
+  }
   const ext = i === 6 ? "png" : "jpg";
   return {
     orig: { url: "https://i.pinimg.com/originals/aa/bb/cc/pin" + i + "." + ext },
@@ -200,6 +213,21 @@ function boardHtml() {
   const cards = [];
   for (let i = 1; i <= PIN_COUNT; i++) {
     const ext = i === 6 ? "png" : "jpg";
+    if (i === 4 || i === 5) {
+      cards.push(
+        '<div class="card" data-test-id="pin">' +
+          '<a class="card__link" href="/pin/9000' + i + '/">' +
+            '<div class="card__media">' +
+              '<img alt="Big pin ' + i + '" src="https://i.pinimg.com/originals/big/big/bigpin' + i + '.jpg">' +
+            "</div>" +
+            '<div class="card__meta"><div class="card__title">Big pin ' + i + "</div>" +
+            '<div class="card__sub">Save</div></div>' +
+          "</a>" +
+        "</div>",
+      );
+      continue;
+    }
+
     const title = PIN_TITLES[i - 1] || "Mock pin " + i;
     // The anchor carries the pin id, the way Pinterest's grid does, so the
     // extension can match a picked card back to an API pin.
@@ -455,6 +483,25 @@ const server = https.createServer(
       if (flakyAttempts[p] <= FLAKY_FAILURES) {
         return send(res, 503, "temporarily unavailable", "text/plain");
       }
+    }
+
+    if (p.indexOf("bigpin") !== -1) {
+      // A very large asset, shaped like a JPEG so the PDF writer can still
+      // measure it. The archive of a board with these in it is bigger than a
+      // single message may carry, which is the case this mock exists for.
+      const head = Buffer.from([
+        0xff, 0xd8, // SOI
+        0xff, 0xc0, 0x00, 0x11, 0x08, // SOF0, length 17, 8-bit
+        0x00, 0x64, // height 100
+        0x00, 0x64, // width 100
+        0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+      ]);
+      const tail = Buffer.from([0xff, 0xd9]); // EOI
+      const pad = Buffer.alloc(
+        Math.max(0, BIG_BYTES - head.length - tail.length),
+        0x5a,
+      );
+      return send(res, 200, Buffer.concat([head, pad, tail]), "image/jpeg");
     }
 
     if (p.startsWith("/originals/") || p.startsWith("/236x/") || p.startsWith("/736x/")) {

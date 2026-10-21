@@ -38,6 +38,16 @@
     controller: null,
     /** The panel module's handle. */
     panelUi: null,
+    /** "board" | "pin" — which view the panel is showing. */
+    panelMode: null,
+    /** The user closed the panel; do not bring it back until the route changes. */
+    panelDismissed: false,
+    /** The board the user was last on, so a pin page can name it. */
+    lastBoardUrl: "",
+    /** The last pin info pushed to the panel, so it is not pushed twice. */
+    lastPinKey: "",
+    /** "original" | "jpeg" | "png" — the format images are saved in. */
+    imageFormat: "original",
   };
 
   /** How many media files are fetched at the same time. */
@@ -211,7 +221,7 @@
   // -------------------------------------------------------------- downloads
 
   /** Download one media URL at full resolution. */
-  async function downloadSingle(media, title) {
+  async function downloadSingle(media, title, format) {
     let url = media.isVideo
       ? media.url
       : util.toOriginalUrl(util.preferFallback(media.url, media.fallbackUrl));
@@ -222,8 +232,24 @@
       url = resolved.url;
     }
 
-    const ext = util.extensionFor(url, media.isVideo);
+    const sourceExt = util.extensionFor(url, media.isVideo);
     const safeTitle = util.sanitizeName(title || "", 40) || "pin";
+
+    // A requested format other than the original needs the bytes, so they are
+    // converted first. A video is always saved as it is.
+    const target = media.isVideo ? null : normaliseFormat(format);
+    if (target && target !== sourceExt && PK.convert) {
+      const original = await fetchMediaBytes(url, media.isVideo);
+      const converted = await PK.convert.convert(original, sourceExt, target);
+      return sendBackground({
+        action: "downloadBytes",
+        data: util.bytesToBase64(converted.bytes),
+        mime: "image/" + converted.ext,
+        filename: "PinSaver/" + safeTitle + "-" + Date.now() + "." + converted.ext,
+      });
+    }
+
+    const ext = sourceExt;
     const filename = "PinSaver/" + safeTitle + "-" + Date.now() + "." + ext;
 
     const res = await sendBackground({
@@ -247,6 +273,30 @@
       mime: media.isVideo ? "video/mp4" : "image/" + ext,
       filename: filename,
     });
+  }
+
+  /** "original" | "jpeg" | "png" → a format name, or null for the original. */
+  function normaliseFormat(format) {
+    const f = String(format || "").toLowerCase();
+    if (f === "jpg" || f === "jpeg") return "jpeg";
+    if (f === "png") return "png";
+    if (f === "webp") return "webp";
+    return null;
+  }
+
+  /** Fetch the bytes of one media file, preferring a direct page fetch. */
+  async function fetchMediaBytes(url, isVideo) {
+    try {
+      return await fetchMediaDirect(url);
+    } catch (_) {
+      const res = await sendBackground({
+        action: "fetchMedia",
+        url: url,
+        isVideo: isVideo,
+      });
+      if (!res.ok) throw new Error(res.error || "media fetch failed");
+      return util.base64ToBytes(res.data);
+    }
   }
 
   /**
@@ -326,6 +376,106 @@
   }
 
   /**
+   * Hand a finished archive to the browser's download machinery.
+   *
+   * A single message may not exceed 64 MiB, and the archive of a large board
+   * is easily bigger than that — the download used to fail with "Message
+   * exceeded maximum allowed size of 64MiB". The archive therefore travels in
+   * pieces and is joined inside the worker, which then hands the browser a
+   * blob URL. No large payload ever crosses a message.
+   *
+   * @param {Uint8Array} bytes the finished archive
+   * @param {string} filename the file name to save it under
+   * @param {string} mime the archive's media type
+   */
+  async function downloadArchive(bytes, filename, mime) {
+    // The archive is handed over as a blob URL.
+    //
+    // Two earlier attempts failed on a big board: sending the bytes as base64
+    // inside a message broke at the 64 MiB message limit, and building one
+    // huge base64 string in the worker broke at V8's maximum string length
+    // ("Invalid string length"). A blob URL is a short string, the browser
+    // streams the bytes to disk, and neither limit applies.
+    const blob = new Blob([bytes], { type: mime || "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    try {
+      const res = await sendBackground({
+        action: "downloadArchive",
+        url: url,
+        filename: filename,
+      });
+      if (!res || !res.ok) {
+        throw new Error((res && res.error) || "archive download failed");
+      }
+      return res;
+    } finally {
+      // The blob has to stay alive while the download reads it.
+      setTimeout(function () {
+        URL.revokeObjectURL(url);
+      }, 10 * 60 * 1000);
+    }
+  }
+
+  /**
+   * Fetch one media file straight from Pinterest's CDN.
+   *
+   * The bytes used to travel back from the service worker as base64 inside a
+   * message, and a single message may not exceed 64 MiB. A board of large
+   * photos produced "Message exceeded maximum allowed size of 64MiB" and the
+   * export stalled with no error. Pinterest's CDN answers with
+   * `Access-Control-Allow-Origin` echoing the page's origin, so the content
+   * script can fetch the file itself: no message, no base64, no size limit.
+   *
+   * @param {string} url the media URL
+   * @returns {Promise<Uint8Array>} the raw bytes
+   */
+  async function fetchMediaDirect(url) {
+    const res = await fetch(url, { credentials: "omit", mode: "cors" });
+    if (!res.ok) throw new Error("Media HTTP " + res.status);
+    const buffer = await res.arrayBuffer();
+    if (!buffer.byteLength) throw new Error("Empty media response");
+    return new Uint8Array(buffer);
+  }
+
+  /**
+   * Fetch several media files, preferring a direct fetch from the page.
+   *
+   * Anything the page could not fetch on its own falls back to the worker, so
+   * a CDN that does not send CORS headers still works.
+   */
+  async function fetchMediaItems(items) {
+    const results = new Array(items.length).fill(null);
+    const failed = [];
+
+    await Promise.all(
+      items.map(async function (item, i) {
+        try {
+          results[i] = { ok: true, bytes: await fetchMediaDirect(item.url) };
+        } catch (_) {
+          failed.push(i);
+        }
+      }),
+    );
+
+    if (!failed.length) return results;
+
+    const batch = await fetchMediaBatch(
+      failed.map(function (i) {
+        return items[i];
+      }),
+    );
+    failed.forEach(function (i, k) {
+      const res = batch[k];
+      if (res && res.ok) {
+        results[i] = { ok: true, bytes: util.base64ToBytes(res.data) };
+      } else {
+        results[i] = { ok: false, error: (res && res.error) || "media fetch failed" };
+      }
+    });
+    return results;
+  }
+
+  /**
    * Fetch a batch of media files through the worker.
    *
    * The worker fetches them concurrently; the results come back in the same
@@ -386,17 +536,45 @@
       });
 
       if (items.length) {
-        const results = await fetchMediaBatch(items);
+        const results = await fetchMediaItems(items);
         results.forEach(function (res, k) {
           const idx = slots[k];
           if (!res || !res.ok) return;
+          const media = plans[idx].media;
           out[i + idx] = {
-            bytes: util.base64ToBytes(res.data),
-            ext: plans[idx].media.ext,
-            isVideo: plans[idx].media.isVideo,
-            url: plans[idx].media.url,
+            bytes: res.bytes,
+            ext: media.ext,
+            isVideo: media.isVideo,
+            url: media.url,
           };
         });
+
+        // A chosen format other than the original is applied here, while the
+        // bytes are still in hand. A file that cannot be converted keeps its
+        // original bytes rather than failing the whole export.
+        const wanted = normaliseFormat(state.imageFormat);
+        if (wanted && PK.convert && PK.convert.convert) {
+          await Promise.all(
+            results.map(async function (res, k) {
+              const idx = slots[k];
+              if (!res || !res.ok) return;
+              const entry = out[i + idx];
+              if (!entry || entry.isVideo) return;
+              if (entry.ext === wanted) return;
+              try {
+                const converted = await PK.convert.convert(
+                  entry.bytes,
+                  entry.ext,
+                  wanted,
+                );
+                entry.bytes = converted.bytes;
+                entry.ext = converted.ext;
+              } catch (_) {
+                /* keep the original bytes */
+              }
+            }),
+          );
+        }
       }
 
       done += chunk.length;
@@ -508,12 +686,11 @@
 
       setPanelStatus(panel, "Building ZIP...");
       const zipped = zipper.build();
-      const res = await sendBackground({
-        action: "downloadBytes",
-        data: util.bytesToBase64(zipped),
-        mime: "application/zip",
-        filename: "PinSaver/" + boardName + "-" + Date.now() + ".zip",
-      });
+      const res = await downloadArchive(
+        zipped,
+        "PinSaver/" + boardName + "-" + Date.now() + ".zip",
+        "application/zip",
+      );
       if (!res.ok) throw new Error(res.error || "ZIP download failed");
       setPanelStatus(
         panel,
@@ -655,12 +832,11 @@
 
       setPanelStatus(panel, "Building PDF (" + pages.length + " pages)...");
       const doc = PK.pdf.buildPdf(pages);
-      const res = await sendBackground({
-        action: "downloadBytes",
-        data: util.bytesToBase64(doc),
-        mime: "application/pdf",
-        filename: "PinSaver/" + boardName + "-" + Date.now() + ".pdf",
-      });
+      const res = await downloadArchive(
+        doc,
+        "PinSaver/" + boardName + "-" + Date.now() + ".pdf",
+        "application/pdf",
+      );
       if (!res.ok) throw new Error(res.error || "PDF download failed");
       setPanelStatus(
         panel,
@@ -714,7 +890,18 @@
       onCancel: function () {
         cancelExport();
       },
+      onDownloadPin: function (format) {
+        downloadCurrentPin(format);
+      },
+      onDownloadSection: function (section) {
+        downloadSection(section);
+      },
+      onBackToBoard: function () {
+        goBackToBoard();
+      },
       onDismiss: function () {
+        // Closing the panel must not make it reappear on the next mutation.
+        state.panelDismissed = true;
         state.panelUi = null;
       },
     });
@@ -808,6 +995,41 @@
           node.setAttribute("data-pinsaver-picked", "1");
         }
       });
+  }
+
+  /**
+   * Download the pin the user is looking at, optionally converted.
+   *
+   * @param {string} [format] "original", "jpeg" or "png"
+   */
+  async function downloadCurrentPin(format) {
+    const ui = ensurePanel();
+    const media = readCloseupMedia();
+    if (!media) {
+      setPanelStatus(ui, "No media found on this pin", true);
+      return;
+    }
+    setPanelStatus(ui, "Downloading the pin…");
+    try {
+      const title = (readPinContext().title || "pin").slice(0, 60);
+      await downloadSingle(media, title, format);
+      setPanelStatus(ui, "Pin saved");
+    } catch (err) {
+      setPanelStatus(ui, String(err.message || err), true);
+    }
+  }
+
+  /** Go back to the board the current pin belongs to. */
+  function goBackToBoard() {
+    if (history.length > 1) {
+      history.back();
+      return;
+    }
+    // No history to go back to: the board is the first path segment's page.
+    const parts = location.pathname.split("/").filter(Boolean);
+    if (parts.length >= 2) {
+      location.href = "/" + parts[0] + "/";
+    }
   }
 
   /** Update the "Selected" tab's count. */
@@ -1043,11 +1265,182 @@
     return util.isBoardPath(location.pathname);
   }
 
+  /**
+   * Show, switch or hide the panel to match the page.
+   *
+   * Pinterest is a single-page app: clicking a pin moves to `/pin/<id>/`
+   * without a reload, so the panel that was built for the board stayed on
+   * screen and offered "Download board as ZIP" on a single pin. The panel now
+   * follows the route — the board view on a board, the pin view on a pin, and
+   * nothing at all on a page that is neither.
+   */
   function syncPanel() {
-    if (isBoardPage()) {
-      state.boardName = state.boardName || readBoardName();
-      ensurePanel();
+    const mode = isBoardPage() ? "board" : isPinPage() ? "pin" : null;
+
+    if (!mode) {
+      if (state.panelUi && state.panelUi.hide) state.panelUi.hide();
+      state.panelMode = null;
+      return;
     }
+
+    if (state.panelDismissed) return;
+    if (mode === "board") {
+      state.boardName = state.boardName || readBoardName();
+      state.lastBoardUrl = location.pathname;
+    }
+
+    const ui = ensurePanel();
+    if (ui.setMode && state.panelMode !== mode) {
+      state.panelMode = mode;
+      ui.setMode(mode);
+      if (mode === "board") loadSections();
+    }
+    if (mode === "pin" && ui.setPinInfo) {
+      const info = readPinContext();
+      const key = info.id + "|" + info.title;
+      if (key !== state.lastPinKey) {
+        state.lastPinKey = key;
+        ui.setPinInfo(info);
+      }
+    }
+    if (ui.show) ui.show();
+  }
+
+  /**
+   * The board the current pin belongs to, when the page reveals it.
+   *
+   * A pin URL (`/pin/<id>/`) carries neither the user nor the board, so the
+   * board is read from the page — the breadcrumb or the board link — and
+   * remembered from the last board the user was on.
+   */
+  function readBoardLink() {
+    const link = document.querySelector(
+      'a[href^="/"][href*="/"]:not([href*="/pin/"])',
+    );
+    if (link) {
+      const href = link.getAttribute("href") || "";
+      if (/^\/[a-z0-9_-]+\/[a-z0-9_-]+\/?$/i.test(href)) {
+        return href;
+      }
+    }
+    return state.lastBoardUrl || "";
+  }
+
+  /**
+   * Load the board's sections into the panel's "Sections" tab.
+   *
+   * A board with sections is read section by section, so a user who only wants
+   * one part of a board should not have to download all of it.
+   */
+  async function loadSections() {
+    const ui = state.panelUi;
+    if (!ui || !ui.setSections || !PK.sections) return;
+    try {
+      const boardId = await api.fetchBoardId(location.pathname.split("?")[0]);
+      const list = await PK.sections.list(boardId);
+      if (state.panelUi === ui) ui.setSections(list);
+    } catch (_) {
+      if (state.panelUi === ui) ui.setSections([]);
+    }
+  }
+
+  /**
+   * Download one section of the board as its own archive.
+   *
+   * @param {{id: string, name: string}} section
+   */
+  async function downloadSection(section) {
+    if (state.busy || !section) return;
+    state.busy = true;
+    state.running = true;
+    state.cancelRequested = false;
+    state.controller = typeof AbortController === "function" ? new AbortController() : null;
+    const ui = ensurePanel();
+    if (ui.setBusy) ui.setBusy(true);
+    if (ui.setTab) ui.setTab("sections");
+    setPanelStatus(ui, "Fetching " + (section.name || "section") + "…");
+
+    try {
+      const boardId = await api.fetchBoardId(location.pathname.split("?")[0]);
+      const pins = await PK.sections.pins(boardId, section, { signal: signal() });
+      if (!pins.length) {
+        setPanelStatus(ui, "That section has no pins", true);
+        return;
+      }
+      if (isCancelled()) {
+        setPanelStatus(ui, "Cancelled — nothing was saved.");
+        return;
+      }
+
+      const boardName = util.sanitizeName(state.boardName || readBoardName(), 60) || "board";
+      const sectionName = util.sanitizeName(section.name || "Section", 50) || "Section";
+      const width = String(pins.length).length;
+      const media = await collectMedia(pins, function (done, total) {
+        setPanelStatus(ui, "Downloading " + done + "/" + total + "…");
+      });
+      if (isCancelled()) {
+        setPanelStatus(ui, "Cancelled — nothing was saved.");
+        return;
+      }
+
+      const zipper = new PK.Zipper();
+      let failed = 0;
+      for (let i = 0; i < pins.length; i++) {
+        const fetched = media[i];
+        if (!fetched) {
+          failed++;
+          continue;
+        }
+        const title =
+          util.sanitizeName(util.pinTitle(pins[i]), 50) ||
+          "pin-" + util.pad(i + 1, width);
+        const name = util.pad(i + 1, width) + "-" + title + "." + fetched.ext;
+        zipper.add(boardName + "/" + sectionName + "/" + name, fetched.bytes);
+      }
+      const meta = buildMetadata(pins, pins.map(function () { return sectionName; }));
+      zipper.addText(boardName + "/" + sectionName + "/_metadata.csv", meta.csv, true);
+      zipper.addText(boardName + "/" + sectionName + "/_metadata.json", meta.json, false);
+
+      setPanelStatus(ui, "Building the section archive…");
+      const zipped = zipper.build();
+      const res = await downloadArchive(
+        zipped,
+        "PinSaver/" + boardName + "-" + sectionName + "-" + Date.now() + ".zip",
+        "application/zip",
+      );
+      if (!res.ok) throw new Error(res.error || "ZIP download failed");
+      setPanelStatus(
+        ui,
+        "Saved " + (pins.length - failed) + " pins from " + sectionName +
+          (failed ? ", " + failed + " skipped" : ""),
+      );
+    } catch (err) {
+      if (isCancelled()) {
+        setPanelStatus(ui, "Cancelled.");
+      } else {
+        setPanelStatus(ui, String(err.message || err), true);
+      }
+    } finally {
+      state.busy = false;
+      state.running = false;
+      state.cancelRequested = false;
+      state.controller = null;
+      if (ui.setBusy) ui.setBusy(false);
+    }
+  }
+
+  /** What we know about the pin the user is looking at. */
+  function readPinContext() {
+    const info = { title: "", id: "", url: location.href };
+    const match = location.pathname.match(/^\/pin\/(\d+)/);
+    if (match) info.id = match[1];
+    const heading = document.querySelector("h1");
+    if (heading && heading.textContent) info.title = heading.textContent.trim();
+    if (!info.title) {
+      const img = document.querySelector("img[src*=\"pinimg\"]");
+      if (img && img.alt) info.title = img.alt.trim();
+    }
+    return info;
   }
 
   // Pinterest is a single-page app: it swaps content without a reload, so a
@@ -1061,10 +1454,19 @@
     const observer = new MutationObserver(function (mutations) {
       let shouldScan = false;
       for (const m of mutations) {
-        if (m.addedNodes && m.addedNodes.length) {
-          shouldScan = true;
-          break;
+        if (!m.addedNodes || !m.addedNodes.length) continue;
+        // The panel is our own DOM. Re-scanning because of it would feed the
+        // observer its own changes and lock the page in a loop: syncPanel()
+        // updates the panel, the panel's change wakes the observer, and the
+        // observer calls syncPanel() again.
+        let ours = false;
+        for (const node of m.addedNodes) {
+          if (node && node.id === PANEL_ID) ours = true;
+          if (node && node.closest && node.closest("#" + PANEL_ID)) ours = true;
         }
+        if (ours) continue;
+        shouldScan = true;
+        break;
       }
       if (shouldScan) {
         scanPins();
@@ -1079,6 +1481,8 @@
         lastPath = location.pathname;
         state.boardName = readBoardName();
         state.selected.clear();
+        state.panelDismissed = false; // a new page gets a fresh panel
+        state.panelMode = null;
         scanPins();
         syncPanel();
       }
@@ -1088,20 +1492,48 @@
   // The popup cannot touch the page directly, so it pokes us over messaging.
   chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     if (message && message.action === "downloadBoard") {
+      // `format` is additive: "zip" (the default) and "pdf".
+      const format = message.format === "pdf" ? "pdf" : "zip";
       if (!isBoardPage()) {
-        sendResponse({ ok: false, error: "Not a board page" });
+        // A pin page still knows its board, so the board can be exported from
+        // there too.
+        const boardUrl = readBoardLink();
+        if (!boardUrl) {
+          sendResponse({ ok: false, error: "Not a board page" });
+          return false;
+        }
+        sendResponse({ ok: true, boardUrl: boardUrl, note: "open the board to export it" });
         return false;
       }
-      downloadBoardZip(false);
-      sendResponse({ ok: true });
+      if (format === "pdf") {
+        downloadBoardPdf(false);
+      } else {
+        downloadBoardZip(false);
+      }
+      sendResponse({ ok: true, format: format });
+      return false;
+    }
+    if (message && message.action === "downloadPin") {
+      if (!isPinPage()) {
+        sendResponse({ ok: false, error: "Not a pin page" });
+        return false;
+      }
+      downloadCurrentPin(message.format);
+      sendResponse({ ok: true, format: message.format || "original" });
       return false;
     }
     if (message && message.action === "getStatus") {
+      const pin = readPinContext();
       sendResponse({
         ok: true,
         isBoard: isBoardPage(),
+        isPin: isPinPage(),
         busy: state.busy,
         selected: state.selected.size,
+        boardName: state.boardName || readBoardName(),
+        boardUrl: isBoardPage() ? location.pathname : readBoardLink(),
+        pinId: pin.id,
+        pinTitle: pin.title,
       });
       return false;
     }
