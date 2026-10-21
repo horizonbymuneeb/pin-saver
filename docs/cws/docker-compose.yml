@@ -1,0 +1,44 @@
+# browserless — an open-source, self-hosted remote browser.
+#
+#   chrome     the browser itself; CDP over WebSocket, a persistent profile so
+#              the user's Google session survives a restart
+#   dashboard  the open-source Browserless Dashboard: a live view of the
+#              browser plus a control surface
+#
+# Both are published through nginx under /cws-<token>/, behind the DSH session
+# gate, so nothing here is reachable without a session.
+services:
+  chrome:
+    image: browserless/chrome:latest
+    container_name: cws-chrome
+    restart: unless-stopped
+    environment:
+      MAX_CONCURRENT_SESSIONS: "10"
+      HOST: "0.0.0.0"
+      PORT: "3000"
+      DATA_DIR: "/data"
+      TOKEN: "${CWS_TOKEN}"
+      CHROME_HEALTH_CHECK_PATH: "/"
+      CONNECTION_TIMEOUT: "60000"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - cws-data:/data
+    shm_size: "2gb"
+    networks: [cws]
+
+  dashboard:
+    image: browserless/dashboard:latest
+    container_name: cws-dashboard
+    restart: unless-stopped
+    environment:
+      BROWSERLESS_URL: "http://chrome:3000"
+      TOKEN: "${CWS_TOKEN}"
+    depends_on: [chrome]
+    networks: [cws]
+
+volumes:
+  cws-data:
+
+networks:
+  cws:
