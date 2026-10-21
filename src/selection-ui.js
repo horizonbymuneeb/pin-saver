@@ -92,6 +92,125 @@
     return "idx:" + index;
   }
 
+  /**
+   * Public Pinterest permalink of a pin.
+   *
+   * A pin without an id has no permalink, so the quick actions of its card
+   * are disabled.
+   */
+  function pinUrlFor(pin) {
+    if (!pin || typeof pin !== "object") return "";
+    const id = pin.id;
+    if (id == null || id === "") return "";
+    return "https://www.pinterest.com/pin/" + String(id) + "/";
+  }
+
+  /**
+   * Copy text to the clipboard.
+   *
+   * `navigator.clipboard.writeText` is the modern path, but a content script
+   * on somebody else's page is regularly denied the clipboard permission and
+   * the promise then rejects. A hidden textarea plus the legacy
+   * `document.execCommand("copy")` still works in that case, so it is the
+   * fallback. Neither path may throw: the caller only wants to know whether
+   * the text made it to the clipboard.
+   *
+   * @param {string} text
+   * @returns {Promise<boolean>} whether the text was copied
+   */
+  function copyText(text) {
+    const value = String(text == null ? "" : text);
+    if (!value) return Promise.resolve(false);
+
+    const fallback = function () {
+      let field = null;
+      try {
+        field = document.createElement("textarea");
+        field.value = value;
+        field.setAttribute("readonly", "");
+        field.style.position = "fixed";
+        field.style.top = "0";
+        field.style.left = "0";
+        field.style.width = "1px";
+        field.style.height = "1px";
+        field.style.padding = "0";
+        field.style.border = "none";
+        field.style.outline = "none";
+        field.style.opacity = "0";
+        field.style.pointerEvents = "none";
+        document.body.appendChild(field);
+        field.focus();
+        field.select();
+        field.setSelectionRange(0, value.length);
+        return typeof document.execCommand === "function"
+          ? !!document.execCommand("copy")
+          : false;
+      } catch (_) {
+        return false;
+      } finally {
+        if (field && field.parentNode) field.parentNode.removeChild(field);
+      }
+    };
+
+    try {
+      if (
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === "function"
+      ) {
+        const written = navigator.clipboard.writeText(value);
+        if (written && typeof written.then === "function") {
+          return written.then(
+            function () {
+              return true;
+            },
+            function () {
+              return fallback();
+            },
+          );
+        }
+        return Promise.resolve(true);
+      }
+    } catch (_) {
+      /* the clipboard API is unusable here, use the textarea path */
+    }
+    return Promise.resolve(fallback());
+  }
+
+  /**
+   * Open a pin in a new browser tab.
+   *
+   * `window.open` returns null when the popup was blocked. That is not an
+   * error the user can do anything about, so it is only reported.
+   *
+   * @returns {boolean} whether a tab was opened
+   */
+  function openInNewTab(url) {
+    if (!url) return false;
+    try {
+      return !!window.open(url, "_blank", "noopener");
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Icons for the per-card quick actions.
+   *
+   * They are inline SVG instead of image files so the dialog needs no extra
+   * request and cannot be blocked by the page's own image policy.
+   */
+  const COPY_ICON =
+    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<rect x="9" y="9" width="12" height="12" rx="2"></rect>' +
+    '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+
+  const OPEN_ICON =
+    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>' +
+    '<path d="M15 3h6v6"></path><path d="M10 14 21 3"></path></svg>';
+
   // ---------------------------------------------------------------- dialog
 
   /**
@@ -155,10 +274,14 @@
     const allBtn = el("button", "pinsaver-sel-btn", "All");
     const noneBtn = el("button", "pinsaver-sel-btn", "None");
     const invertBtn = el("button", "pinsaver-sel-btn", "Invert");
-    allBtn.type = noneBtn.type = invertBtn.type = "button";
+    const copyAllBtn = el("button", "pinsaver-sel-btn pinsaver-sel-btn--copy", "Copy links");
+    allBtn.type = noneBtn.type = invertBtn.type = copyAllBtn.type = "button";
+    copyAllBtn.title = "Copy all selected links";
+    copyAllBtn.setAttribute("aria-label", "Copy all selected links");
     actions.appendChild(allBtn);
     actions.appendChild(noneBtn);
     actions.appendChild(invertBtn);
+    actions.appendChild(copyAllBtn);
     toolbar.appendChild(search);
     toolbar.appendChild(filterInfo);
     toolbar.appendChild(actions);
@@ -241,9 +364,60 @@
       count.textContent = chosen.length + " of " + pins.length + " selected";
       downloadBtn.textContent = "Download " + chosen.length + " selected";
       downloadBtn.disabled = chosen.length === 0;
+      // Copying the links of the selection only makes sense with a selection.
+      copyAllBtn.disabled = chosen.length === 0;
       filterInfo.textContent = searchTerm
         ? "showing " + visibleTotal + " of " + pins.length
         : "";
+    }
+
+    /** Write a line into the status bar of the dialog. */
+    function showStatus(text, isError) {
+      status.textContent = text == null ? "" : String(text);
+      status.classList.toggle("pinsaver-sel-status--error", !!isError);
+    }
+
+    /**
+     * Copy one pin link and confirm it in the status line.
+     *
+     * The clipboard may be denied to a content script, so a failure is
+     * reported instead of thrown.
+     */
+    function copyLink(url, message) {
+      if (!url) {
+        showStatus("This pin has no link", true);
+        return;
+      }
+      copyText(url).then(function (ok) {
+        if (state.closed) return;
+        if (ok) showStatus(message);
+        else showStatus("Could not copy the link", true);
+      });
+    }
+
+    /** Copy the links of every selected pin, one per line. */
+    function copyAllLinks() {
+      const chosen = selectedPins();
+      if (!chosen.length) return;
+      const urls = [];
+      for (let i = 0; i < chosen.length; i++) {
+        const url = pinUrlFor(chosen[i]);
+        if (url) urls.push(url);
+      }
+      if (!urls.length) {
+        showStatus("None of the selected pins has a link", true);
+        return;
+      }
+      copyText(urls.join("\n")).then(function (ok) {
+        if (state.closed) return;
+        if (ok) {
+          showStatus(
+            "Copied " + urls.length + (urls.length === 1 ? " link" : " links"),
+          );
+        } else {
+          showStatus("Could not copy the links", true);
+        }
+      });
     }
 
     /** Point the thumbnail of a card at a new URL (or at the placeholder). */
@@ -276,7 +450,7 @@
     }
 
     /** Build the DOM of one pin card. */
-    function createCard(key, title) {
+    function createCard(pin, key, title) {
       const card = el("label", "pinsaver-sel-card");
       card.setAttribute("role", "listitem");
       card.dataset.key = key;
@@ -289,6 +463,25 @@
       check.type = "checkbox";
       check.setAttribute("aria-label", title ? "Select " + title : "Select pin");
 
+      // Per-pin quick actions: copy the pin link, open the pin in a tab.
+      const url = pinUrlFor(pin);
+      const actions = el("span", "pinsaver-sel-card-actions");
+      const copyBtn = el("button", "pinsaver-sel-action pinsaver-sel-action--copy");
+      copyBtn.type = "button";
+      copyBtn.dataset.action = "copy";
+      copyBtn.innerHTML = COPY_ICON;
+      const openBtn = el("button", "pinsaver-sel-action pinsaver-sel-action--open");
+      openBtn.type = "button";
+      openBtn.dataset.action = "open";
+      openBtn.innerHTML = OPEN_ICON;
+      if (!url) {
+        // Without an id there is no permalink, so there is nothing to copy.
+        copyBtn.disabled = true;
+        openBtn.disabled = true;
+      }
+      actions.appendChild(copyBtn);
+      actions.appendChild(openBtn);
+
       const foot = el("span", "pinsaver-sel-card-foot");
       const titleEl = el("span", "pinsaver-sel-card-title", title || "Untitled");
       if (!title) titleEl.classList.add("pinsaver-sel-card-title--empty");
@@ -296,6 +489,7 @@
 
       card.appendChild(thumb);
       card.appendChild(check);
+      card.appendChild(actions);
       card.appendChild(foot);
 
       const record = {
@@ -306,6 +500,9 @@
         thumb: thumb,
         img: null,
         imageUrl: null,
+        copyBtn: copyBtn,
+        openBtn: openBtn,
+        url: url,
       };
 
       // The card is a <label> around the checkbox, so clicking the card and
@@ -319,6 +516,27 @@
         updateCounters();
       });
 
+      // The quick actions live inside that same <label>, so a click on them
+      // would run the label's activation behaviour and tick the pin. Both
+      // handlers cancel the event first: `preventDefault()` stops the label
+      // from forwarding the click to the checkbox and `stopPropagation()`
+      // keeps the click away from the card.
+      copyBtn.addEventListener("click", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (state.closed) return;
+        copyLink(record.url, "Link copied");
+      });
+
+      openBtn.addEventListener("click", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (state.closed) return;
+        if (!openInNewTab(record.url)) {
+          showStatus("The browser blocked the new tab", true);
+        }
+      });
+
       return record;
     }
 
@@ -326,9 +544,10 @@
     function ensureCard(pin, key) {
       const title = titleFor(pin);
       const url = imageUrlFor(pin);
+      const link = pinUrlFor(pin);
       let card = cards.get(key);
       if (!card) {
-        card = createCard(key, title);
+        card = createCard(pin, key, title);
         cards.set(key, card);
       } else if (card.title !== title) {
         card.title = title;
@@ -336,6 +555,16 @@
         card.titleEl.classList.toggle("pinsaver-sel-card-title--empty", !title);
         card.check.setAttribute("aria-label", title ? "Select " + title : "Select pin");
       }
+      if (link !== card.url) {
+        card.url = link;
+        card.copyBtn.disabled = !link;
+        card.openBtn.disabled = !link;
+      }
+      // The aria-labels carry the pin title, so they have to follow a title
+      // that changed after the card was built.
+      const label = title || "pin";
+      card.copyBtn.setAttribute("aria-label", "Copy link to " + label);
+      card.openBtn.setAttribute("aria-label", "Open " + label + " in a new tab");
       if (url !== card.imageUrl) {
         card.imageUrl = url;
         applyImage(card, url);
@@ -486,6 +715,9 @@
     cancelBtn.addEventListener("click", cancelSelection);
     closeBtn.addEventListener("click", cancelSelection);
     downloadBtn.addEventListener("click", confirmSelection);
+    copyAllBtn.addEventListener("click", function () {
+      copyAllLinks();
+    });
 
     // Clicking the dimmed backdrop cancels. A drag that starts inside the
     // dialog and ends on the backdrop must not cancel, so the mousedown
@@ -514,8 +746,7 @@
 
     /** Show a status line inside the dialog, e.g. "Loaded 443 pins". */
     function setStatus(text, isError) {
-      status.textContent = text == null ? "" : String(text);
-      status.classList.toggle("pinsaver-sel-status--error", !!isError);
+      showStatus(text, isError);
     }
 
     /** The ticked pins, in the order the caller supplied them. */

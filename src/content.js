@@ -48,6 +48,14 @@
     lastPinKey: "",
     /** "original" | "jpeg" | "png" — the format images are saved in. */
     imageFormat: "original",
+    /** The order the archive is written in. */
+    order: "board",
+    /** "all" or a range expression such as "1-50". */
+    range: "all",
+    /** The pins that failed in the last export, so they can be retried. */
+    failedPins: [],
+    /** The report of the last export run. */
+    lastExportReport: null,
   };
 
   /** How many media files are fetched at the same time. */
@@ -507,80 +515,61 @@
    * @returns {Promise<Array>} per pin: {bytes, ext, isVideo, url} or null
    */
   async function collectMedia(pins, onProgress) {
-    const out = new Array(pins.length).fill(null);
-    let done = 0;
+    if (!pins.length) return [];
 
-    for (let i = 0; i < pins.length; i += FETCH_CONCURRENCY) {
-      if (isCancelled()) break;
-      const chunk = pins.slice(i, i + FETCH_CONCURRENCY);
+    // One pin at a time, with the work handed to the tested export runner:
+    // it keeps the results in board order, bounds the concurrency, and turns
+    // a pin that throws into a recorded failure instead of a dead export.
+    const fetchOne = async function (pin) {
+      const media = await pickMediaUrl(pin);
+      if (!media) return null;
+      const bytes = await fetchMediaBytes(media.url, media.isVideo);
+      const entry = {
+        bytes: bytes,
+        ext: media.ext,
+        isVideo: media.isVideo,
+        url: media.url,
+      };
 
-      // Resolve the media URL first. For a video this fetches the playlist,
-      // so it is done in parallel too.
-      const plans = await Promise.all(
-        chunk.map(async function (pin) {
-          try {
-            const media = await pickMediaUrl(pin);
-            return media ? { media: media } : null;
-          } catch (_) {
-            return null;
-          }
-        }),
-      );
-
-      const items = [];
-      const slots = [];
-      plans.forEach(function (plan, idx) {
-        if (!plan) return;
-        slots.push(idx);
-        items.push({ url: plan.media.url, isVideo: plan.media.isVideo });
-      });
-
-      if (items.length) {
-        const results = await fetchMediaItems(items);
-        results.forEach(function (res, k) {
-          const idx = slots[k];
-          if (!res || !res.ok) return;
-          const media = plans[idx].media;
-          out[i + idx] = {
-            bytes: res.bytes,
-            ext: media.ext,
-            isVideo: media.isVideo,
-            url: media.url,
-          };
-        });
-
-        // A chosen format other than the original is applied here, while the
-        // bytes are still in hand. A file that cannot be converted keeps its
-        // original bytes rather than failing the whole export.
-        const wanted = normaliseFormat(state.imageFormat);
-        if (wanted && PK.convert && PK.convert.convert) {
-          await Promise.all(
-            results.map(async function (res, k) {
-              const idx = slots[k];
-              if (!res || !res.ok) return;
-              const entry = out[i + idx];
-              if (!entry || entry.isVideo) return;
-              if (entry.ext === wanted) return;
-              try {
-                const converted = await PK.convert.convert(
-                  entry.bytes,
-                  entry.ext,
-                  wanted,
-                );
-                entry.bytes = converted.bytes;
-                entry.ext = converted.ext;
-              } catch (_) {
-                /* keep the original bytes */
-              }
-            }),
-          );
+      // A chosen format other than the original is applied here, while the
+      // bytes are still in hand. A file that cannot be converted keeps its
+      // original bytes rather than failing the whole export.
+      const wanted = normaliseFormat(state.imageFormat);
+      if (wanted && PK.convert && PK.convert.convert && !entry.isVideo && entry.ext !== wanted) {
+        try {
+          const converted = await PK.convert.convert(entry.bytes, entry.ext, wanted);
+          entry.bytes = converted.bytes;
+          entry.ext = converted.ext;
+        } catch (_) {
+          /* keep the original bytes */
         }
       }
+      return entry;
+    };
 
-      done += chunk.length;
-      if (onProgress) onProgress(done, pins.length);
+    if (!PK.export || !PK.export.run) {
+      // The runner is always present in the shipped package; this is only a
+      // guard for a partially loaded page.
+      const out = [];
+      for (let i = 0; i < pins.length; i++) {
+        if (isCancelled()) break;
+        try {
+          out.push(await fetchOne(pins[i]));
+        } catch (_) {
+          out.push(null);
+        }
+        if (onProgress) onProgress(i + 1, pins.length);
+      }
+      return out;
     }
-    return out;
+
+    const report = await PK.export.run(pins, fetchOne, {
+      concurrency: FETCH_CONCURRENCY,
+      onProgress: onProgress,
+      shouldStop: isCancelled,
+    });
+    state.lastExportReport = report;
+    return report.results;
   }
 
   /** Build `_metadata.csv` (+ JSON twin) describing the archived pins. */
@@ -638,10 +627,13 @@
           return util.isPinSelected(p, state.selected);
         });
       }
+      // A range narrows the board down ("1-50"); an order arranges it.
+      pins = applyRange(pins);
       if (!pins.length) {
         setPanelStatus(panel, "No pins found", true);
         return;
       }
+      pins = applyOrder(pins);
 
       setPanelStatus(panel, "Downloading " + pins.length + " items...");
       const zipper = new PK.Zipper();
@@ -660,6 +652,7 @@
       }
 
       let failed = 0;
+      const failedPins = [];
       for (let i = 0; i < pins.length; i++) {
         const pin = pins[i];
         const folder = sectionFolder(pin, "");
@@ -670,6 +663,7 @@
         const fetched = media[i];
         if (!fetched) {
           failed++;
+          failedPins.push(pin);
         } else {
           const title =
             util.sanitizeName(util.pinTitle(pin), 50) ||
@@ -692,9 +686,12 @@
         "application/zip",
       );
       if (!res.ok) throw new Error(res.error || "ZIP download failed");
+      state.failedPins = failedPins;
+      if (panel.setFailed) panel.setFailed(failedPins.length);
       setPanelStatus(
         panel,
-        "Saved " + pins.length + " pins" + (failed ? ", " + failed + " skipped" : ""),
+        "Saved " + (pins.length - failed) + " pins" +
+          (failed ? ", " + failed + " skipped — you can retry them" : ""),
       );
     } catch (err) {
       if (isCancelled()) {
@@ -895,6 +892,12 @@
       },
       onDownloadSection: function (section) {
         downloadSection(section);
+      },
+      onExportOption: function (name, value) {
+        setExportOption(name, value);
+      },
+      onRetryFailed: function () {
+        retryFailedPins();
       },
       onBackToBoard: function () {
         goBackToBoard();
@@ -1324,6 +1327,143 @@
       }
     }
     return state.lastBoardUrl || "";
+  }
+
+  /**
+   * Apply one of the panel's export options.
+   *
+   * @param {string} name "format" | "order" | "range"
+   * @param {string} value
+   */
+  function setExportOption(name, value) {
+    if (name === "format") {
+      state.imageFormat = normaliseFormat(value) || "original";
+    } else if (name === "order") {
+      state.order = value || "board";
+    } else if (name === "range") {
+      state.range = String(value == null ? "" : value);
+      // Validate the expression straight away: a typo should be reported while
+      // the user is looking at the field, not three seconds later when the
+      // export starts.
+      if (PK.range && PK.range.parse) {
+        // A modest stand-in total: the check is for the expression's shape,
+        // and a huge total would make the parser build a huge array.
+        const check = PK.range.parse(state.range, 1000);
+        if (!check.ok) {
+          setPanelStatus(state.panelUi, check.error || "That range is not valid", true);
+        } else if (state.panelUi && state.panelUi.setStatus) {
+          const status = state.panelUi.element && state.panelUi.element.querySelector(".pinsaver-status");
+          if (status && status.textContent && /range/i.test(status.textContent)) {
+            state.panelUi.setStatus("", false);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * The pins a range expression selects, or all of them.
+   *
+   * @param {Array} pins
+   * @returns {Array}
+   */
+  function applyRange(pins) {
+    const text = String(state.range || "").trim();
+    if (!text || text.toLowerCase() === "all") return pins;
+    if (!PK.range || !PK.range.select) return pins;
+    const result = PK.range.select(pins, text);
+    if (!result.ok) {
+      setPanelStatus(state.panelUi, result.error || "Bad pin range", true);
+      return [];
+    }
+    return result.pins;
+  }
+
+  /**
+   * Order the pins for the archive.
+   *
+   * @param {Array} pins
+   * @returns {Array}
+   */
+  function applyOrder(pins) {
+    if (!PK.sort || !PK.sort.order) return pins;
+    return PK.sort.order(pins, state.order);
+  }
+
+  /**
+   * Download the pins that failed in the last export, and only those.
+   */
+  async function retryFailedPins() {
+    if (state.busy || !state.failedPins.length) return;
+    const pins = state.failedPins.slice();
+    const ui = ensurePanel();
+    state.busy = true;
+    state.running = true;
+    state.cancelRequested = false;
+    state.controller = typeof AbortController === "function" ? new AbortController() : null;
+    if (ui.setBusy) ui.setBusy(true);
+    setPanelStatus(ui, "Retrying " + pins.length + " pin(s)…");
+
+    try {
+      const boardName = util.sanitizeName(state.boardName || readBoardName(), 60) || "board";
+      const width = String(pins.length).length;
+      const media = await collectMedia(pins, function (done, total) {
+        setPanelStatus(ui, "Retrying " + done + "/" + total + "…");
+      });
+      if (isCancelled()) {
+        setPanelStatus(ui, "Cancelled — nothing was saved.");
+        return;
+      }
+
+      const zipper = new PK.Zipper();
+      const failedAgain = [];
+      for (let i = 0; i < pins.length; i++) {
+        const fetched = media[i];
+        if (!fetched) {
+          failedAgain.push(pins[i]);
+          continue;
+        }
+        const title =
+          util.sanitizeName(util.pinTitle(pins[i]), 50) ||
+          "pin-" + util.pad(i + 1, width);
+        const name = util.pad(i + 1, width) + "-" + title + "." + fetched.ext;
+        const folder = sectionFolder(pins[i], "");
+        const dir = boardName + (folder ? "/" + folder : "");
+        zipper.add(dir + "/" + name, fetched.bytes);
+      }
+      const meta = buildMetadata(pins, pins.map(function (p) { return sectionFolder(p, ""); }));
+      zipper.addText(boardName + "/_metadata.csv", meta.csv, true);
+      zipper.addText(boardName + "/_metadata.json", meta.json, false);
+
+      setPanelStatus(ui, "Building the retry archive…");
+      const zipped = zipper.build();
+      const res = await downloadArchive(
+        zipped,
+        "PinSaver/" + boardName + "-retry-" + Date.now() + ".zip",
+        "application/zip",
+      );
+      if (!res.ok) throw new Error(res.error || "ZIP download failed");
+
+      state.failedPins = failedAgain;
+      if (ui.setFailed) ui.setFailed(failedAgain.length);
+      setPanelStatus(
+        ui,
+        "Retried " + (pins.length - failedAgain.length) + " pin(s)" +
+          (failedAgain.length ? ", " + failedAgain.length + " still failing" : ""),
+      );
+    } catch (err) {
+      if (isCancelled()) {
+        setPanelStatus(ui, "Cancelled.");
+      } else {
+        setPanelStatus(ui, String(err.message || err), true);
+      }
+    } finally {
+      state.busy = false;
+      state.running = false;
+      state.cancelRequested = false;
+      state.controller = null;
+      if (ui.setBusy) ui.setBusy(false);
+    }
   }
 
   /**

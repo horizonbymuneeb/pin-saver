@@ -47,6 +47,9 @@
         "src/lib/api.js",
         "src/lib/convert.js",
         "src/lib/sections.js",
+        "src/lib/export.js",
+        "src/lib/range.js",
+        "src/lib/sort.js",
         "src/content.js"
       ],
       "css": [

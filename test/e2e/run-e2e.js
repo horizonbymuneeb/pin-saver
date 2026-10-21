@@ -523,6 +523,97 @@ async function waitForFile(magic, timeoutMs) {
     }
   }
 
+  // --- the panel's tab strip ----------------------------------------------
+  // A fourth tab squeezed "About" down to a single letter, and the strip
+  // scrolled with no visible scrollbar, so the label looked broken.
+  await page.goto("https://www.pinterest.com/pinterest/girls-night-in/", {
+    waitUntil: "domcontentloaded",
+    timeout: 30000,
+  });
+  await page.waitForSelector("#pinsaver-panel", { timeout: 20000 });
+  const tabInfo = await page.evaluate(function () {
+    const panel = document.querySelector("#pinsaver-panel");
+    const list = panel.querySelector(".pinsaver-tabs__list");
+    const tabs = Array.prototype.map.call(
+      panel.querySelectorAll(".pinsaver-tab"),
+      function (t) {
+        return {
+          label: t.textContent.trim(),
+          clipped: t.scrollWidth > t.clientWidth + 1,
+        };
+      },
+    );
+    return {
+      width: Math.round(panel.getBoundingClientRect().width),
+      fits: list.scrollWidth <= list.clientWidth + 1,
+      tabs: tabs,
+    };
+  });
+  const clippedTabs = tabInfo.tabs.filter(function (t) { return t.clipped; });
+  record("the panel card is roomy", tabInfo.width >= 280, tabInfo.width + "px wide");
+  record(
+    "every tab label is fully visible",
+    clippedTabs.length === 0,
+    clippedTabs.map(function (t) { return t.label; }).join(", ") || "none clipped",
+  );
+  record("the tab strip fits without scrolling", tabInfo.fits);
+
+  // --- a range of pins ----------------------------------------------------
+  fs.rmSync(DOWNLOADS, { recursive: true, force: true });
+  fs.mkdirSync(DOWNLOADS, { recursive: true });
+  await page.locator('#pinsaver-panel [data-pinsaver-option="range"]').fill("1-2");
+  await page.locator('#pinsaver-panel [data-pinsaver-option="range"]').dispatchEvent("change");
+  await boardZipBtn.first().click();
+  const rangeZip = await waitForFile(Buffer.from([0x50, 0x4b, 0x03, 0x04]), 90000);
+  let rangeEntries = 0;
+  if (rangeZip) {
+    const eocd = rangeZip.bytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+    rangeEntries = eocd >= 0 ? rangeZip.bytes.readUInt16LE(eocd + 10) : 0;
+  }
+  record(
+    "a pin range narrows the export",
+    Boolean(rangeZip) && rangeEntries === 4,
+    rangeEntries + " entries (2 pins + 2 metadata)",
+  );
+
+  // --- a bad range is refused ---------------------------------------------
+  await page.locator('#pinsaver-panel [data-pinsaver-option="range"]').fill("50-10");
+  await page.locator('#pinsaver-panel [data-pinsaver-option="range"]').dispatchEvent("change");
+  const rangeStatus = await page.locator("#pinsaver-panel .pinsaver-status").innerText();
+  record(
+    "a reversed range is reported",
+    /range|order|invalid|wrong/i.test(rangeStatus),
+    JSON.stringify(rangeStatus.trim().slice(0, 50)),
+  );
+  await page.locator('#pinsaver-panel [data-pinsaver-option="range"]').fill("");
+  await page.locator('#pinsaver-panel [data-pinsaver-option="range"]').dispatchEvent("change");
+
+  // --- the order of the archive -------------------------------------------
+  fs.rmSync(DOWNLOADS, { recursive: true, force: true });
+  fs.mkdirSync(DOWNLOADS, { recursive: true });
+  await page.locator('#pinsaver-panel [data-pinsaver-option="order"]').selectOption("title-asc");
+  await boardZipBtn.first().click();
+  const orderZip = await waitForFile(Buffer.from([0x50, 0x4b, 0x03, 0x04]), 90000);
+  let ordered = false;
+  if (orderZip) {
+    const names = zipEntryNames(orderZip.bytes).filter(function (n) {
+      return /\d+-/.test(n);
+    });
+    const titles = names.map(function (n) {
+      return n.replace(/^.*?\d+-/, "").replace(/\.[a-z]+$/, "");
+    });
+    const sorted = titles.slice().sort(function (a, b) {
+      return a.toLowerCase() < b.toLowerCase() ? -1 : a.toLowerCase() > b.toLowerCase() ? 1 : 0;
+    });
+    ordered = titles.length > 1 && titles.join("|") === sorted.join("|");
+  }
+  record("the archive can be ordered by title", ordered, ordered ? "sorted" : "not sorted");
+
+  // --- the retry button ----------------------------------------------------
+  const retryBtn = page.locator("#pinsaver-panel .pinsaver-retry");
+  const retryVisible = (await retryBtn.count()) > 0 && (await retryBtn.first().isVisible().catch(function () { return false; }));
+  record("a failed export offers a retry", retryVisible);
+
   // --- alternate DOM -----------------------------------------------------
   // Pinterest has shipped grids without the card marker. The extension must
   // still attach buttons, otherwise per-pin download dies on a markup change.

@@ -290,6 +290,67 @@
   cursor: pointer;
 }
 
+/* Per-pin quick actions (copy link, open in a new tab).
+   They float over the thumbnail and only show up on hover. The card keeps
+   them visible while it holds the keyboard focus, so they stay reachable
+   without a mouse. They are only faded out, never removed, because a hidden
+   button could not be reached with the Tab key. */
+.pinsaver-sel-card-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.pinsaver-sel-card:hover .pinsaver-sel-card-actions,
+.pinsaver-sel-card:focus-within .pinsaver-sel-card-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.pinsaver-sel-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.94);
+  color: #e60023;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.pinsaver-sel-action:hover {
+  border-color: #e60023;
+  background: #e60023;
+  color: #ffffff;
+}
+
+.pinsaver-sel-action:focus-visible {
+  outline: 2px solid #e60023;
+  outline-offset: 2px;
+}
+
+.pinsaver-sel-action:disabled {
+  background: rgba(255, 255, 255, 0.94);
+  color: #a8a8a8;
+  cursor: not-allowed;
+}
+
+.pinsaver-sel-action:disabled:hover {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.94);
+  color: #a8a8a8;
+}
+
 .pinsaver-sel-card-foot {
   display: block;
   flex: 1 1 auto;
@@ -377,6 +438,19 @@
 .pinsaver-sel-btn--primary:hover {
   border-color: #c00021;
   background: #c00021;
+}
+
+/* The bulk "copy the links of the selection" action. It is tinted with the
+   Pinterest red so it reads as a copy action next to All / None / Invert. */
+.pinsaver-sel-btn--copy {
+  border-color: #f2b8c1;
+  background: #fff5f6;
+  color: #c00021;
+}
+
+.pinsaver-sel-btn--copy:hover {
+  border-color: #e60023;
+  background: #ffe9ec;
 }
 
 .pinsaver-sel-btn:disabled {

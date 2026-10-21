@@ -6,7 +6,7 @@
   right: 24px;
   bottom: 28px;
   z-index: 2147483000;
-  width: 240px;
+  width: 300px;
   padding: 14px;
   border-radius: 14px;
   background: #ffffff;
@@ -184,6 +184,8 @@
 
 .pinsaver-tabs__list {
   display: flex;
+  /* The strip scrolls rather than squeezing a label down to one letter. */
+  scroll-behavior: smooth;
   /* Stretch, so the tab carrying the count badge is exactly as tall as
      the others and all three share one horizontal line. */
   align-items: stretch;
@@ -203,7 +205,7 @@
   appearance: none;
   position: relative;
   flex: 0 0 auto;
-  padding: 8px;
+  padding: 8px 7px;
   border: none;
   border-radius: 8px 8px 0 0;
   background: transparent;
@@ -475,4 +477,61 @@
 .pinsaver-pin__url {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Export options: format, order, the pin range and the retry button. */
+.pinsaver-options {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+
+.pinsaver-options__field {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 10px;
+  color: #666666;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pinsaver-options__select,
+.pinsaver-options__input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 6px;
+  border: 1px solid #d9d9d9;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #111111;
+  font-family: inherit;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.pinsaver-options__select:focus-visible,
+.pinsaver-options__input:focus-visible {
+  outline: 2px solid #e60023;
+  outline-offset: 1px;
+}
+
+.pinsaver-options__range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: #666666;
+}
+
+.pinsaver-options__input {
+  flex: 1 1 auto;
+}
+
+.pinsaver-retry {
+  margin-top: 2px;
 }

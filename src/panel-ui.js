@@ -275,6 +275,51 @@
       pdfBtn.type = "button";
       bodies.board.appendChild(pdfBtn);
 
+      // --- Board tab: the export options.
+
+      const optionsRow = el("div", "pinsaver-options");
+
+      const formatLabel = el("label", "pinsaver-options__field");
+      formatLabel.appendChild(document.createTextNode("Format"));
+      const formatSelect = el("select", "pinsaver-options__select");
+      formatSelect.dataset.pinsaverOption = "format";
+      [["original", "Original"], ["jpeg", "JPEG"], ["png", "PNG"]].forEach(function (pair) {
+        const opt = el("option", null, pair[1]);
+        opt.value = pair[0];
+        formatSelect.appendChild(opt);
+      });
+      formatLabel.appendChild(formatSelect);
+      optionsRow.appendChild(formatLabel);
+
+      const orderLabel = el("label", "pinsaver-options__field");
+      orderLabel.appendChild(document.createTextNode("Order"));
+      const orderSelect = el("select", "pinsaver-options__select");
+      orderSelect.dataset.pinsaverOption = "order";
+      [["board", "Board order"], ["title-asc", "Title A-Z"], ["title-desc", "Title Z-A"]].forEach(function (pair) {
+        const opt = el("option", null, pair[1]);
+        opt.value = pair[0];
+        orderSelect.appendChild(opt);
+      });
+      orderLabel.appendChild(orderSelect);
+      optionsRow.appendChild(orderLabel);
+
+      bodies.board.appendChild(optionsRow);
+
+      const rangeLabel = el("label", "pinsaver-options__range");
+      rangeLabel.appendChild(document.createTextNode("Pins"));
+      const rangeInput = el("input", "pinsaver-options__input");
+      rangeInput.type = "text";
+      rangeInput.dataset.pinsaverOption = "range";
+      rangeInput.placeholder = "all";
+      rangeInput.setAttribute("aria-label", "Which pins to download, for example 1-50");
+      rangeLabel.appendChild(rangeInput);
+      bodies.board.appendChild(rangeLabel);
+
+      const retryBtn = el("button", "pinsaver-btn pinsaver-btn--ghost pinsaver-retry", "Retry failed pins");
+      retryBtn.type = "button";
+      retryBtn.hidden = true;
+      bodies.board.appendChild(retryBtn);
+
       // --- Selected tab: the multi-select area.
 
       const countLine = el("div", "pinsaver-selected__count");
@@ -345,6 +390,18 @@
 
       // ------------------------------------------------------------ wiring
 
+      formatSelect.addEventListener("change", function () {
+        call(opts.onExportOption, "format", formatSelect.value);
+      });
+      orderSelect.addEventListener("change", function () {
+        call(opts.onExportOption, "order", orderSelect.value);
+      });
+      rangeInput.addEventListener("change", function () {
+        call(opts.onExportOption, "range", rangeInput.value);
+      });
+      retryBtn.addEventListener("click", function () {
+        call(opts.onRetryFailed);
+      });
       zipBtn.addEventListener("click", function () {
         call(opts.onZip);
       });
@@ -581,6 +638,29 @@
         });
       }
 
+      /**
+       * Show how many pins failed, and offer a retry.
+       *
+       * @param {number} count
+       */
+      function setFailed(count) {
+        const n = Number(count) || 0;
+        retryBtn.hidden = n <= 0;
+        retryBtn.textContent = n > 0 ? "Retry " + n + " failed pin" + (n === 1 ? "" : "s") : "Retry failed pins";
+      }
+
+      /**
+       * Set one of the export options from outside.
+       *
+       * @param {string} name "format" | "order" | "range"
+       * @param {string} value
+       */
+      function setOption(name, value) {
+        if (name === "format") formatSelect.value = value;
+        else if (name === "order") orderSelect.value = value;
+        else if (name === "range") rangeInput.value = value == null ? "" : String(value);
+      }
+
       function setPinInfo(info) {
         const data = info && typeof info === "object" ? info : {};
 
@@ -620,6 +700,8 @@
         setMode: setMode,
         setPinInfo: setPinInfo,
         setSections: setSections,
+        setFailed: setFailed,
+        setOption: setOption,
         show: show,
         hide: hide,
         destroy: destroy,
