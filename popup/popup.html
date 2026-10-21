@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Pin Saver</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="head">
+      <img src="../icons/icon48.png" alt="" width="28" height="28" />
+      <div>
+        <h1>Pin Saver</h1>
+        <p class="sub">Pinterest board downloader</p>
+      </div>
+    </header>
+
+    <section id="on-board" hidden>
+      <button id="btn-zip" class="primary">Download whole board as ZIP</button>
+      <p class="hint">
+        Open a board, then use the floating panel on the page for selection.
+      </p>
+    </section>
+
+    <section id="off-board" hidden>
+      <p class="hint">
+        Open a Pinterest board to download it. On any pin you can also click the
+        red <b>&darr;</b> button to save the original file.
+      </p>
+      <button id="btn-open" class="secondary">Open Pinterest</button>
+    </section>
+
+    <footer class="foot">
+      <span id="status">Ready</span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

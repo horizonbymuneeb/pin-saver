@@ -1,0 +1,27 @@
+{
+  "name": "pin-saver",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinterest board downloader Chrome extension (clean-room implementation)",
+  "scripts": {
+    "test": "node --test test/unit.test.js test/integration.test.js test/pdf.test.js test/video.test.js",
+    "test:unit": "node --test test/unit.test.js",
+    "test:integration": "node --test test/integration.test.js",
+    "check": "node scripts/check.js",
+    "zip": "rm -f ../pin-saver-extension.zip && zip -qr ../pin-saver-extension.zip manifest.json src popup icons",
+    "test:pdf": "node --test test/pdf.test.js",
+    "test:live": "node scripts/live-test.js",
+    "test:video": "node --test test/video.test.js",
+    "test:e2e": "node test/e2e/run-e2e.js",
+    "package": "npm run check && npm run zip && echo 'built ../pin-saver-extension.zip'",
+    "test:live-board": "node scripts/live-board-export.js",
+    "store:check": "node scripts/store-check.js",
+    "publish": "node scripts/publish-chrome-web-store.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}

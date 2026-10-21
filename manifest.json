@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "Pin Saver - Pinterest Board Downloader",
+  "version": "1.0.0",
+  "description": "Download Pinterest boards as ZIP, select pins, and save single pins in original quality. Works with images and videos.",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Pin Saver",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "activeTab",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://*.pinterest.com/*",
+    "https://pinterest.com/*",
+    "https://*.pinimg.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.pinterest.com/*",
+        "https://pinterest.com/*"
+      ],
+      "js": [
+        "src/lib/util.js",
+        "src/lib/zip.js",
+        "src/lib/pdf.js",
+        "src/lib/video.js",
+        "src/lib/api.js",
+        "src/content.js"
+      ],
+      "css": [
+        "src/content.css"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}
