@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Pin Saver - Pinterest Board Downloader",
   "version": "1.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvtxCvQyoQuTHK0IVmORTHIA/mvfN6ewSsUqEm9zXINp6GIYvODKJuiWQe2psYc0kp/FBfSrNP1djEW83YJCpxhHP1XBBF/0Dca9CvN2LAt1QOoZx2Kh8Wzo1RbQYbRVXyDT0Xly9ogBTvijhBc6GQ9gYx+Hr30f1PsMmzRC5mcU1MFEnsTjLgtVj/ZjGfl7Ijfx0cE5xjaxkWVTcbdb2dxyub0zedN2iuNTHA2Efb1TE/Y4xKjv+BfbCGwBp0AV9qZcE6eL/Q3poEuXoQNiuwj/1bdAEdTrHx/ZsmXdWpcYZZiMabBHfEexXaslVekhP1J68IgQJI0YQMET+BMsmWwIDAQAB",
   "description": "Download Pinterest boards as ZIP, select pins, and save single pins in original quality. Works with images and videos.",
   "minimum_chrome_version": "116",
   "icons": {

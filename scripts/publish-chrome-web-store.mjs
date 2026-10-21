@@ -46,10 +46,24 @@ const args = Object.fromEntries(
 );
 const dryRun = Boolean(args["dry-run"]);
 
-const clientId = args["client-id"] || process.env.CWS_CLIENT_ID;
-const clientSecret = args["client-secret"] || process.env.CWS_CLIENT_SECRET;
-const refreshToken = args["refresh-token"] || process.env.CWS_REFRESH_TOKEN;
-let itemId = args["item-id"] || process.env.CWS_ITEM_ID || null;
+// The credentials may come from the command line, the environment, or the
+// file that `npm run publish:auth` writes after the consent screen.
+const SAVED = path.join(ROOT, ".cws-credentials.json");
+let saved = {};
+if (existsSync(SAVED)) {
+  try {
+    saved = JSON.parse(await readFile(SAVED, "utf8"));
+  } catch (_) {
+    saved = {};
+  }
+}
+
+const clientId = args["client-id"] || process.env.CWS_CLIENT_ID || saved.client_id;
+const clientSecret =
+  args["client-secret"] || process.env.CWS_CLIENT_SECRET || saved.client_secret;
+const refreshToken =
+  args["refresh-token"] || process.env.CWS_REFRESH_TOKEN || saved.refresh_token;
+let itemId = args["item-id"] || process.env.CWS_ITEM_ID || saved.item_id || null;
 
 // ------------------------------------------------------------------- helpers
 function fail(message) {
@@ -59,10 +73,27 @@ function fail(message) {
 
 async function accessToken() {
   if (!clientId || !clientSecret || !refreshToken) {
-    fail(
-      "missing OAuth credentials. Pass --client-id/--client-secret/--refresh-token " +
-        "or set CWS_CLIENT_ID / CWS_CLIENT_SECRET / CWS_REFRESH_TOKEN.",
+    console.error(
+      [
+        "",
+        "ERROR: missing Chrome Web Store API credentials.",
+        "",
+        "Get them once from the developer dashboard:",
+        "  https://chrome.google.com/u/0/developer",
+        "  -> Publish -> your item -> 'Update information' -> scroll to the bottom",
+        "  -> the 'Chrome Web Store API' / 'OAuth credentials' section",
+        "  -> Create a new client, application type **Desktop app**",
+        "",
+        "Then run:",
+        "  npm run publish:auth -- --client-id=<id> --client-secret=<secret>",
+        "  (open the URL it prints, allow access - it stores the refresh token)",
+        "  npm run publish",
+        "",
+        "Or set CWS_CLIENT_ID / CWS_CLIENT_SECRET / CWS_REFRESH_TOKEN in the environment.",
+        "",
+      ].join("\n"),
     );
+    process.exit(1);
   }
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -118,6 +149,7 @@ function toV11Listing(listing) {
     iconUrl: listing.iconUrl,
     primaryColor: "#e60023",
     backgroundColor: "#ffffff",
+    privacyPolicyUrl: listing.privacyPolicyUrl || listing.privacy_policy_url || "",
     screenshots: (listing.screenshots || []).map((s, i) => ({
       url: s.url,
       position: i,

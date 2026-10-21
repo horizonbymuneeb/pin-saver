@@ -41,7 +41,12 @@ if (!clientId || !clientSecret) {
 }
 
 const PORT = 8977;
-const redirectUri = "http://localhost:" + PORT + "/oauth2callback";
+// A Desktop-app client needs a loopback redirect. The port may be any free
+// port and the path is not significant for an installed app.
+const redirectUri = "http://localhost:" + PORT + "/";
+// The authorization endpoint. https://oauth2.googleapis.com/auth does not
+// exist and answers 404; the working one is accounts.google.com.
+const AUTH_URL = "https://accounts.google.com/o/oauth2/auth";
 
 const server = createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
@@ -101,6 +106,31 @@ async function exchange(code) {
   process.exit(0);
 }
 
+// Print the consent URL and stop: the caller opens it on their own machine
+// and sends the authorization code back.
+if (args["print-url"]) {
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: "code",
+    scope: scope,
+    access_type: "offline",
+    prompt: "consent",
+  });
+  console.log(AUTH_URL + "?" + params.toString());
+  process.exit(0);
+}
+
+// Remote mode: the browser on the caller's machine cannot reach this
+// server's localhost, so the consent flow ends on a page that cannot load.
+// The authorization code is still in the address bar, and the caller pastes
+// it back here.
+if (args.code) {
+  exchange(String(args.code)).catch((err) => {
+    console.error("ERROR:", err.message);
+    process.exit(1);
+  });
+} else {
 server.listen(PORT, () => {
   const params = new URLSearchParams({
     client_id: clientId,
@@ -111,6 +141,13 @@ server.listen(PORT, () => {
     prompt: "consent",
   });
   console.log("Open this URL in your browser, sign in, and approve:\n");
-  console.log("https://oauth2.googleapis.com/auth?" + params.toString() + "\n");
+  console.log(AUTH_URL + "?" + params.toString() + "\n");
+  console.log(
+    "If the browser cannot reach this machine, the page will fail to load —\n" +
+      "that is expected. Copy the `code` from the address bar and run:\n" +
+      "  node scripts/auth-chrome-web-store.mjs --client-id=<id> " +
+      "--client-secret=<secret> --code=<code>\n",
+  );
   console.log("Waiting for the callback on http://localhost:" + PORT + " ...");
 });
+}
