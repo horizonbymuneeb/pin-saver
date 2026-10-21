@@ -100,11 +100,12 @@ computer.
 | Asset | File | Requirement |
 |---|---|---|
 | Small icon | `my-version/icons/icon128.png` | 128×128 PNG ✔ (already in the package) |
-| Screenshot 1 | `store/01-board-panel.png` | 1280×800 ✔ |
-| Screenshot 2 | `store/02-selection.png` | 1280×800 ✔ |
-| Screenshot 3 | `store/03-single-pin.png` | 1280×800 ✔ |
-| Screenshot 4 | `store/04-popup.png` | 1280×800 ✔ |
+| Screenshot 1 | `store/01-board-panel.png` | 1280×800 ✔ (board + panel + per-pin buttons) |
+| Screenshot 2 | `store/02-selection.png` | 1280×800 ✔ (multi-select) |
+| Screenshot 3 | `store/03-single-pin.png` | 1280×800 ✔ (single-pin page) |
+| Screenshot 4 | `store/04-export-done.png` | 1280×800 ✔ (export finished) |
 | Privacy policy URL | `https://horizonbymuneeb.github.io/pin-saver-privacy/` | public HTTPS page ✔ |
+| Source repository | `https://github.com/horizonbymuneeb/pin-saver` | public, MIT |
 
 ## Review notes (what the reviewer should look at)
 
