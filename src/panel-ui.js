@@ -295,9 +295,19 @@
       orderLabel.appendChild(document.createTextNode("Order"));
       const orderSelect = el("select", "pinsaver-options__select");
       orderSelect.dataset.pinsaverOption = "order";
-      [["board", "Board order"], ["title-asc", "Title A-Z"], ["title-desc", "Title Z-A"]].forEach(function (pair) {
-        const opt = el("option", null, pair[1]);
-        opt.value = pair[0];
+      // The order list comes from the shared module so the panel and the
+      // sorting code can never drift apart.
+      const orders =
+        PK.sort && PK.sort.ORDERS
+          ? PK.sort.ORDERS
+          : [
+              { id: "board", label: "Board order" },
+              { id: "title-asc", label: "Title A-Z" },
+              { id: "title-desc", label: "Title Z-A" },
+            ];
+      orders.forEach(function (pair) {
+        const opt = el("option", null, pair.label);
+        opt.value = pair.id;
         orderSelect.appendChild(opt);
       });
       orderLabel.appendChild(orderSelect);
