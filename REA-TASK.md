@@ -396,3 +396,55 @@ so a refresh token comes back, and `prompt=consent`.
 Verified end to end with fake credentials: the run reaches the token exchange
 and fails there with Google's own `invalid_client` — the only missing piece is
 the real client.
+
+
+## Round 33 — PUBLISHED FOR REVIEW
+
+The item is live in the Chrome Web Store review queue.
+
+| | |
+|---|---|
+| Publisher | tmuneebanjum@gmail.com (UUID `3a2b5539-d9da-4555-ac96-2aa6c277d9bb`) |
+| Item id | `jdfjeiajmielkjbeoafnekpppdlpjkeg` |
+| Status | **PENDING_REVIEW** (submitted via `POST /v2/publishers/{pid}/items/{iid}:publish`) |
+| Dashboard | https://chrome.google.com/webstore/devconsole/3a2b5539-d9da-4555-ac96-2aa6c277d9bb/jdfjeiajmielkjbeoafnekpppdlpjkeg/edit |
+
+### What the store required, and how it was satisfied
+The dashboard's "Why can't I submit?" panel listed every gap, and the live
+browser session was used to fill them:
+
+| Requirement | How |
+|---|---|
+| detailed description (min 25 chars) | 1,919 characters from `store/listing.json` |
+| category | Shopping |
+| language | English (United States) |
+| store icon (128×128) | `icons/icon128.png` uploaded |
+| screenshots (at least one) | the four 1280×800 24-bit PNGs uploaded |
+| single purpose description | "Download a Pinterest board, or a selection of pins from it, as a ZIP archive or a PDF." |
+| activeTab justification | the panel is injected into the page the user opened and acts only on a click |
+| downloads justification | the archive or the single pin is written to the user's own Downloads folder |
+| host permission justification | the board is read from Pinterest's own API and its media from Pinterest's CDN, only for the board on screen |
+| remote code | "No, I am not using remote code" — all code is in the package |
+| data-usage certifications | the three "I do not …" boxes checked, no data category checked |
+| privacy policy URL | the live policy page |
+| visibility | Public |
+
+After the last save the "Unable to publish" section disappeared from the
+dashboard, and the API accepted the submission with `PENDING_REVIEW`.
+
+### The live browser session (how the dashboard was driven)
+The user's Google account could not be reached from the server, so a shared
+browser was set up on the box:
+
+- `Xvfb :99` (1600×1000) → Chromium 148 with the extension preloaded, CDP on
+  `127.0.0.1:9222`
+- `x11vnc` on 5900 (localhost) → `websockify` on 6080 serving noVNC
+- nginx location `/cws-<random-token>/` on `dsh.hhdevs.space`, behind the
+  DSH session gate (401 without a session)
+- the agent drives the same browser over CDP with Playwright, so every click
+  is visible to the user
+
+One bug worth remembering: **noVNC builds its websocket path itself**
+(`/websockify`) and ignores the page's directory, so the URL must carry
+`&path=cws-<token>/websockify` — without it the page loads and then says
+"failed to connect to server".
