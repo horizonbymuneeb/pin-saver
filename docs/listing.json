@@ -4,19 +4,19 @@
   "name": "Pin Saver — Pinterest Board Downloader",
   "summary": "Download a whole Pinterest board as ZIP or PDF. Images and videos, original resolution, board sections kept as folders.",
   "description": "Save an entire Pinterest board to your computer in one click.\n\nPin Saver reads the board you are currently viewing through Pinterest's own\nAPI, then downloads every pin at its original resolution and packs it into a\nZIP archive — or lays it out as a PDF.\n\nWHAT IT DOWNLOADS\n\n• Images at full \"originals\" resolution, not the small thumbnails Pinterest\n  shows in the grid.\n• Videos as real, playable MP4 files. Pinterest only exposes an HLS\n  playlist; Pin Saver resolves the underlying fragmented MP4 for you, so the\n  file opens in any video player.\n• Board sections are preserved as folders, so the structure of the board is\n  kept inside the archive.\n• A metadata sidecar (_metadata.csv and _metadata.json) listing each pin's\n  title, link, section and type.\n\nWHERE IT WORKS\n\n• On a board page: a small panel gives you \"Download board as ZIP\",\n  \"Download board as PDF\" and \"Select pins\".\n• On every pin in the grid: a small download button saves that one pin.\n• On a single-pin page: a \"Download pin\" button.\n• From the toolbar popup: one click to export the board you are on.\n\nSELECTING SPECIFIC PINS\n\nTap \"Select pins\", tap the pins you want, then \"ZIP selected\" — the archive\ncontains only the pins you picked.\n\nROBUSTNESS\n\n• Transient network failures are retried, so a single hiccup does not abort a\n  large download.\n• A pin that cannot be downloaded is skipped and counted instead of ruining\n  the whole archive.\n• Works on any Pinterest regional domain, and uses the sign-in you already\n  have in your browser — no separate login inside the extension.\n\nPRIVACY\n\nPin Saver has no server, no analytics and no telemetry. It collects nothing,\nstores nothing and sends nothing anywhere except to Pinterest itself. See the\nprivacy policy in this listing for details.\n\nPERMISSIONS\n\n• activeTab — to show the download panel on the page you opened.\n• downloads — to save the ZIP / PDF into your own Downloads folder.",
-  "iconUrl": "https://raw.githubusercontent.com/horizonbymuneeb/pin-saver/f35226fd13cb405c3f4a28c79010158087674c9d/docs/icon128.png",
+  "iconUrl": "https://raw.githubusercontent.com/horizonbymuneeb/pin-saver/fd2ae02d770bdd029e3842b597102ee63787d5d1/docs/icon128.png",
   "screenshots": [
     {
-      "url": "https://raw.githubusercontent.com/horizonbymuneeb/pin-saver/f35226fd13cb405c3f4a28c79010158087674c9d/docs/01-board-panel.png"
+      "url": "https://raw.githubusercontent.com/horizonbymuneeb/pin-saver/fd2ae02d770bdd029e3842b597102ee63787d5d1/docs/01-board-panel.png"
     },
     {
-      "url": "https://raw.githubusercontent.com/horizonbymuneeb/pin-saver/f35226fd13cb405c3f4a28c79010158087674c9d/docs/02-selection.png"
+      "url": "https://raw.githubusercontent.com/horizonbymuneeb/pin-saver/fd2ae02d770bdd029e3842b597102ee63787d5d1/docs/02-selection.png"
     },
     {
-      "url": "https://raw.githubusercontent.com/horizonbymuneeb/pin-saver/f35226fd13cb405c3f4a28c79010158087674c9d/docs/03-single-pin.png"
+      "url": "https://raw.githubusercontent.com/horizonbymuneeb/pin-saver/fd2ae02d770bdd029e3842b597102ee63787d5d1/docs/03-single-pin.png"
     },
     {
-      "url": "https://raw.githubusercontent.com/horizonbymuneeb/pin-saver/f35226fd13cb405c3f4a28c79010158087674c9d/docs/04-export-done.png"
+      "url": "https://raw.githubusercontent.com/horizonbymuneeb/pin-saver/fd2ae02d770bdd029e3842b597102ee63787d5d1/docs/04-export-done.png"
     }
   ]
 }
