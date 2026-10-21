@@ -1,0 +1,385 @@
+/* Pin Saver manual pin selection dialog.
+   Every class carries the `pinsaver-sel-` prefix so neither Pinterest's own
+   rules nor the injected panel can style the modal by accident. */
+
+.pinsaver-sel-overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 2147483400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(17, 17, 17, 0.62);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  color: #111111;
+  -webkit-font-smoothing: antialiased;
+}
+
+.pinsaver-sel-overlay *,
+.pinsaver-sel-overlay *::before,
+.pinsaver-sel-overlay *::after {
+  box-sizing: border-box;
+}
+
+.pinsaver-sel-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(1040px, 100%);
+  height: min(760px, 100%);
+  max-height: 100%;
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------------ header */
+
+.pinsaver-sel-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 14px 16px;
+  border-bottom: 1px solid #ececec;
+  background: #ffffff;
+}
+
+.pinsaver-sel-heading {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #111111;
+}
+
+.pinsaver-sel-close {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: #f1f1f1;
+  color: #555555;
+  font-size: 18px;
+  line-height: 30px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.pinsaver-sel-close:hover {
+  background: #e6e6e6;
+  color: #111111;
+}
+
+/* ----------------------------------------------------------------- toolbar */
+
+.pinsaver-sel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 12px 16px;
+  border-bottom: 1px solid #ececec;
+  background: #ffffff;
+}
+
+.pinsaver-sel-search {
+  flex: 1 1 220px;
+  min-width: 160px;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid #dcdcdc;
+  border-radius: 999px;
+  background: #fafafa;
+  color: #111111;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.pinsaver-sel-search:focus {
+  outline: 2px solid #e60023;
+  outline-offset: 1px;
+  background: #ffffff;
+}
+
+.pinsaver-sel-filterinfo {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: #6b6b6b;
+  white-space: nowrap;
+}
+
+.pinsaver-sel-filterinfo:empty {
+  display: none;
+}
+
+.pinsaver-sel-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+/* ------------------------------------------------------------------ status */
+
+.pinsaver-sel-status {
+  flex: 0 0 auto;
+  padding: 8px 16px;
+  border-bottom: 1px solid #efefef;
+  background: #fafafa;
+  color: #555555;
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.pinsaver-sel-status:empty {
+  display: none;
+}
+
+.pinsaver-sel-status--error {
+  background: #fff4f5;
+  color: #c00021;
+}
+
+/* -------------------------------------------------------------------- body */
+
+.pinsaver-sel-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #f5f5f6;
+}
+
+.pinsaver-sel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 158px));
+  /*
+   * The row height is fixed instead of being derived from the cards.
+   *
+   * A percentage width inside a grid item is indefinite while the row is
+   * sized, so an `aspect-ratio` thumbnail would report a height of zero and
+   * the rows would collapse to the height of the title. A fixed row height
+   * keeps the grid stable, and the 1:1 thumbnail still follows the column
+   * width because the card has a definite width by then.
+   */
+  grid-auto-rows: 210px;
+  align-content: start;
+  justify-content: center;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 14px 16px 18px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.pinsaver-sel-empty {
+  flex: 0 0 auto;
+  padding: 40px 16px;
+  color: #8a8a8a;
+  font-size: 13px;
+  text-align: center;
+}
+
+.pinsaver-sel-empty[hidden] {
+  display: none;
+}
+
+/* ------------------------------------------------------------------- cards */
+
+.pinsaver-sel-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e4e4e4;
+  border-radius: 12px;
+  background: #ffffff;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pinsaver-sel-card:hover {
+  border-color: #c9c9c9;
+}
+
+.pinsaver-sel-card[data-selected="1"] {
+  border-color: #e60023;
+  box-shadow: 0 0 0 2px #e60023;
+}
+
+/* The thumbnail sits in a fixed aspect box so the grid does not reflow
+   while the lazily loaded images arrive. */
+.pinsaver-sel-thumb {
+  position: relative;
+  display: block;
+  flex: 0 0 auto;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: #ececec;
+  overflow: hidden;
+}
+
+.pinsaver-sel-thumb-img {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Neutral placeholder for pins without a usable image. */
+.pinsaver-sel-thumb-ph {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: none;
+}
+
+.pinsaver-sel-thumb--empty .pinsaver-sel-thumb-ph {
+  display: block;
+}
+
+.pinsaver-sel-thumb-ph::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 40px;
+  height: 40px;
+  margin: -20px 0 0 -20px;
+  border: 2px solid #c6c6c6;
+  border-radius: 6px;
+}
+
+.pinsaver-sel-thumb-ph::after {
+  content: "";
+  position: absolute;
+  top: calc(50% - 16px);
+  left: calc(50% + 4px);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c6c6c6;
+}
+
+.pinsaver-sel-check {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: #e60023;
+  cursor: pointer;
+}
+
+.pinsaver-sel-card-foot {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px 10px 10px;
+}
+
+.pinsaver-sel-card-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  min-height: 32px;
+  overflow: hidden;
+  color: #111111;
+  font-size: 12px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.pinsaver-sel-card-title--empty {
+  color: #9a9a9a;
+  font-style: italic;
+}
+
+/* ------------------------------------------------------------------ footer */
+
+.pinsaver-sel-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 12px 16px;
+  border-top: 1px solid #ececec;
+  background: #ffffff;
+}
+
+.pinsaver-sel-count {
+  flex: 1 1 auto;
+  color: #111111;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pinsaver-sel-footer-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+/* ----------------------------------------------------------------- buttons */
+
+.pinsaver-sel-btn {
+  height: 34px;
+  padding: 0 16px;
+  border: 1px solid #e0e0e0;
+  border-radius: 999px;
+  background: #f2f2f2;
+  color: #111111;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, filter 0.15s ease;
+}
+
+.pinsaver-sel-btn:hover {
+  background: #e8e8e8;
+}
+
+.pinsaver-sel-btn--ghost {
+  background: #ffffff;
+}
+
+.pinsaver-sel-btn--ghost:hover {
+  background: #f2f2f2;
+}
+
+.pinsaver-sel-btn--primary {
+  border-color: #e60023;
+  background: #e60023;
+  color: #ffffff;
+}
+
+.pinsaver-sel-btn--primary:hover {
+  border-color: #c00021;
+  background: #c00021;
+}
+
+.pinsaver-sel-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

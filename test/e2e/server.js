@@ -115,6 +115,8 @@ let feedFailures = 0;
 const FEED_FAILURES = 1;
 /** Number of deliberately injected transient failures, so the test can expect them. */
 const stats = { injectedFailures: 0 };
+/** When set, media answers slowly — used to test cancelling a long export. */
+let mediaDelayMs = 0;
 const FLAKY_PATH = "/originals/aa/bb/cc/pin3.jpg";
 const FLAKY_FAILURES = 2;
 
@@ -463,6 +465,17 @@ const server = https.createServer(
         const buf = fs.readFileSync(file);
         return send(res, 200, buf, base.endsWith(".png") ? "image/png" : "image/jpeg");
       }
+      if (mediaDelayMs) {
+        return setTimeout(function () {
+          const base2 = p.slice(p.lastIndexOf("/") + 1);
+          const file2 = path.join(__dirname, "mock", base2);
+          if (/^pin\d+\.(jpg|png)$/.test(base2) && fs.existsSync(file2)) {
+            send(res, 200, fs.readFileSync(file2), base2.endsWith(".png") ? "image/png" : "image/jpeg");
+            return;
+          }
+          send(res, 200, JPEG, "image/jpeg");
+        }, mediaDelayMs);
+      }
       if (p.endsWith(".png")) return send(res, 200, PNG, "image/png");
       return send(res, 200, JPEG, "image/jpeg");
     }
@@ -506,6 +519,11 @@ const server = https.createServer(
         0x69, 0x73, 0x6f, 0x6d, 0x6d, 0x70, 0x34, 0x32,
       ]);
       return send(res, 200, Buffer.concat([ftyp, Buffer.alloc(4096, 7)]), "video/mp4");
+    }
+
+    if (p.indexOf("/slow-board/") !== -1) {
+      mediaDelayMs = 900;
+      return send(res, 200, boardHtml().replace("Mock Board", "Slow Board"), "text/html; charset=utf-8");
     }
 
     if (p.indexOf("/gated-board/") !== -1) {

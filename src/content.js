@@ -24,11 +24,24 @@
   };
 
   const state = {
+    /** Pin ids the user picked in the selection dialog. */
     selected: new Set(),
-    selecting: false,
+    /** The pin objects behind those ids, so the export does not refetch them. */
+    selectedPins: [],
     busy: false,
     boardName: "",
+    /** Set while an export is running. */
+    running: false,
+    /** The user asked the running export to stop. */
+    cancelRequested: false,
+    /** Aborts the in-flight API and media work. */
+    controller: null,
+    /** The panel module's handle. */
+    panelUi: null,
   };
+
+  /** How many media files are fetched at the same time. */
+  const FETCH_CONCURRENCY = 8;
 
   // ---------------------------------------------------------------- helpers
 
@@ -282,22 +295,114 @@
     return { url: url, isVideo: true, ext: util.extensionFor(url, true) };
   }
 
-  async function fetchPinBytes(pin) {
-    const media = await pickMediaUrl(pin);
-    if (!media) return null;
+  /** The abort signal of the running export, if there is one. */
+  function signal() {
+    return state.controller ? state.controller.signal : undefined;
+  }
 
-    const res = await sendBackground({
-      action: "fetchMedia",
-      url: media.url,
-      isVideo: media.isVideo,
-    });
-    if (!res.ok) return null;
-    return {
-      bytes: util.base64ToBytes(res.data),
-      ext: media.ext,
-      isVideo: media.isVideo,
-      url: media.url,
-    };
+  /** True when the user asked the export to stop. */
+  function isCancelled() {
+    return state.cancelRequested;
+  }
+
+  /**
+   * Ask the running export to stop.
+   *
+   * A long board download used to be unstoppable: once it started the only way
+   * out was to reload the page, and even then the download kept running in the
+   * background worker. Now the panel gets a Cancel button, the abort signal is
+   * fired and the worker is told to drop the fetches in flight.
+   */
+  function cancelExport() {
+    if (!state.running) return;
+    state.cancelRequested = true;
+    try {
+      if (state.controller) state.controller.abort();
+    } catch (_) {
+      /* already aborted */
+    }
+    sendBackground({ action: "cancelFetch" });
+    setPanelStatus(ensurePanel(), "Cancelling…");
+  }
+
+  /**
+   * Fetch a batch of media files through the worker.
+   *
+   * The worker fetches them concurrently; the results come back in the same
+   * order as the items. A file that failed is reported, not thrown, so one bad
+   * pin cannot stop the batch.
+   */
+  async function fetchMediaBatch(items) {
+    if (!items.length) return [];
+    const res = await sendBackground({ action: "fetchMediaBatch", items: items });
+    if (!res || !res.ok || !Array.isArray(res.results)) {
+      const message = (res && res.error) || "media batch failed";
+      return items.map(function () {
+        return { ok: false, error: message };
+      });
+    }
+    return res.results;
+  }
+
+  /**
+   * Download the media of many pins, a batch at a time.
+   *
+   * Doing this one pin at a time was the reason a 500-pin board took minutes:
+   * every pin was a serial round trip to the worker. The bytes are now fetched
+   * in parallel batches, while the result order is kept so the archive is
+   * still written in board order.
+   *
+   * @param {Array} pins the pins to fetch
+   * @param {function} onProgress called with (done, total)
+   * @returns {Promise<Array>} per pin: {bytes, ext, isVideo, url} or null
+   */
+  async function collectMedia(pins, onProgress) {
+    const out = new Array(pins.length).fill(null);
+    let done = 0;
+
+    for (let i = 0; i < pins.length; i += FETCH_CONCURRENCY) {
+      if (isCancelled()) break;
+      const chunk = pins.slice(i, i + FETCH_CONCURRENCY);
+
+      // Resolve the media URL first. For a video this fetches the playlist,
+      // so it is done in parallel too.
+      const plans = await Promise.all(
+        chunk.map(async function (pin) {
+          try {
+            const media = await pickMediaUrl(pin);
+            return media ? { media: media } : null;
+          } catch (_) {
+            return null;
+          }
+        }),
+      );
+
+      const items = [];
+      const slots = [];
+      plans.forEach(function (plan, idx) {
+        if (!plan) return;
+        slots.push(idx);
+        items.push({ url: plan.media.url, isVideo: plan.media.isVideo });
+      });
+
+      if (items.length) {
+        const results = await fetchMediaBatch(items);
+        results.forEach(function (res, k) {
+          const idx = slots[k];
+          if (!res || !res.ok) return;
+          out[i + idx] = {
+            bytes: util.base64ToBytes(res.data),
+            ext: plans[idx].media.ext,
+            isVideo: plans[idx].media.isVideo,
+            url: plans[idx].media.url,
+          };
+        });
+      }
+
+      done += chunk.length;
+      if (onProgress) onProgress(done, pins.length);
+    }
+    return out;
   }
 
   /** Build `_metadata.csv` (+ JSON twin) describing the archived pins. */
@@ -319,19 +424,35 @@
   async function downloadBoardZip(onlySelected) {
     if (state.busy) return;
     state.busy = true;
+    state.running = true;
+    state.cancelRequested = false;
+    state.controller = typeof AbortController === "function" ? new AbortController() : null;
     const panel = ensurePanel();
+    if (panel && panel.setBusy) panel.setBusy(true);
     setPanelStatus(panel, "Reading board info...");
 
     try {
       const pathname = location.pathname.split("?")[0];
-      const boardId = await api.fetchBoardId(pathname);
+      const boardId = await api.fetchBoardId(pathname, signal());
       const boardName =
         util.sanitizeName(state.boardName || readBoardName(), 60) || "board";
 
       setPanelStatus(panel, "Fetching pin list...");
-      const allPins = await api.fetchAllBoardPins(boardId, function (count, page) {
-        setPanelStatus(panel, "Fetched " + count + " pins (page " + page + ")");
-      });
+      const allPins = await api.fetchAllBoardPins(
+        boardId,
+        function (count, page, error) {
+          if (error) {
+            setPanelStatus(
+              panel,
+              "Fetched " + count + " pins — a page failed (" + error + ")",
+              true,
+            );
+            return;
+          }
+          setPanelStatus(panel, "Fetched " + count + " pins (page " + page + ")");
+        },
+        signal(),
+      );
 
       let pins = allPins;
       if (onlySelected) {
@@ -347,10 +468,20 @@
       setPanelStatus(panel, "Downloading " + pins.length + " items...");
       const zipper = new PK.Zipper();
       const sections = [];
-      let done = 0;
-      let failed = 0;
       const width = String(pins.length).length;
 
+      // The bytes are fetched in parallel batches; the archive is still
+      // written in board order.
+      const media = await collectMedia(pins, function (done, total) {
+        setPanelStatus(panel, "Downloading " + done + "/" + total + "…");
+      });
+
+      if (isCancelled()) {
+        setPanelStatus(panel, "Cancelled — nothing was saved.");
+        return;
+      }
+
+      let failed = 0;
       for (let i = 0; i < pins.length; i++) {
         const pin = pins[i];
         const folder = sectionFolder(pin, "");
@@ -358,12 +489,7 @@
 
         // One un-downloadable pin (a video whose playlist cannot be resolved,
         // for instance) must be skipped and counted, never abort the archive.
-        let fetched = null;
-        try {
-          fetched = await fetchPinBytes(pin);
-        } catch (_) {
-          fetched = null;
-        }
+        const fetched = media[i];
         if (!fetched) {
           failed++;
         } else {
@@ -373,15 +499,6 @@
           const name = util.pad(i + 1, width) + "-" + title + "." + fetched.ext;
           const dir = boardName + (folder ? "/" + folder : "");
           zipper.add(dir + "/" + name, fetched.bytes);
-        }
-
-        done++;
-        if (done % 5 === 0 || done === pins.length) {
-          setPanelStatus(
-            panel,
-            "Archiving " + done + "/" + pins.length +
-              (failed ? " (" + failed + " failed)" : ""),
-          );
         }
       }
 
@@ -403,9 +520,17 @@
         "Saved " + pins.length + " pins" + (failed ? ", " + failed + " skipped" : ""),
       );
     } catch (err) {
-      setPanelStatus(panel, String(err.message || err), true);
+      if (isCancelled()) {
+        setPanelStatus(panel, "Cancelled.");
+      } else {
+        setPanelStatus(panel, String(err.message || err), true);
+      }
     } finally {
       state.busy = false;
+      state.running = false;
+      state.cancelRequested = false;
+      state.controller = null;
+      if (panel && panel.setBusy) panel.setBusy(false);
     }
   }
 
@@ -445,6 +570,9 @@
   async function downloadBoardPdf(onlySelected) {
     if (state.busy) return;
     state.busy = true;
+    state.running = true;
+    state.cancelRequested = false;
+    state.controller = typeof AbortController === "function" ? new AbortController() : null;
     const panel = ensurePanel();
     setPanelStatus(panel, "Reading board info...");
 
@@ -482,16 +610,21 @@
         return;
       }
 
+      // Fetch everything first, in parallel batches, then render the pages.
+      const media = await collectMedia(pins, function (done, total) {
+        setPanelStatus(panel, "Downloading " + done + "/" + total + "…");
+      });
+
+      if (isCancelled()) {
+        setPanelStatus(panel, "Cancelled — nothing was saved.");
+        return;
+      }
+
       const pages = [];
       let skipped = 0;
       for (let i = 0; i < pins.length; i++) {
-        setPanelStatus(panel, "Rendering page " + (i + 1) + "/" + pins.length);
-        let fetched = null;
-        try {
-          fetched = await fetchPinBytes(pins[i]);
-        } catch (_) {
-          fetched = null;
-        }
+        if (isCancelled()) break;
+        const fetched = media[i];
         if (!fetched) {
           skipped++;
           continue;
@@ -535,9 +668,17 @@
           (skipped ? ", " + skipped + " skipped" : ""),
       );
     } catch (err) {
-      setPanelStatus(panel, String(err.message || err), true);
+      if (isCancelled()) {
+        setPanelStatus(panel, "Cancelled.");
+      } else {
+        setPanelStatus(panel, String(err.message || err), true);
+      }
     } finally {
       state.busy = false;
+      state.running = false;
+      state.cancelRequested = false;
+      state.controller = null;
+      if (panel && panel.setBusy) panel.setBusy(false);
     }
   }
 
@@ -546,122 +687,140 @@
   const PANEL_ID = "pinsaver-panel";
 
   /**
-   * Clear every visual trace of a selection.
+   * Create the floating panel.
    *
-   * Cancelling used to drop `state.selected` and the outline while leaving the
-   * per-pin ticks in place, so pins still looked selected but the archive came
-   * out empty.
+   * The panel itself is built by `PK.PanelUI`, which draws the horizontal tab
+   * bar (Board / Selected / About) across the top. This function only wires
+   * the buttons to the actions and keeps a single instance alive.
    */
-  function resetSelectionVisuals() {
-    document.querySelectorAll("[data-pinsaver-picked]").forEach(function (node) {
-      node.removeAttribute("data-pinsaver-picked");
-    });
-    document.querySelectorAll(".pinsaver-pin-btn").forEach(function (btn) {
-      // Leave a button alone while it is mid-download.
-      if (!btn.disabled) setPinButtonIcon(btn, "download");
-    });
-  }
-
   function ensurePanel() {
-    let panel = document.getElementById(PANEL_ID);
-    if (panel) return panel;
+    if (state.panelUi) return state.panelUi;
 
-    panel = document.createElement("div");
-    panel.id = PANEL_ID;
-    panel.className = "pinsaver-panel";
-
-    const title = document.createElement("div");
-    title.className = "pinsaver-panel__title";
-    title.textContent = "Pin Saver";
-    panel.appendChild(title);
+    const ui = PK.PanelUI.create({
+      title: "Pin Saver",
+      version: chrome.runtime.getManifest().version,
+      onZip: function () {
+        downloadBoardZip(false);
+      },
+      onPdf: function () {
+        downloadBoardPdf(false);
+      },
+      onSelectPins: function () {
+        openSelectionDialog();
+      },
+      onZipSelected: function () {
+        downloadBoardZip(true);
+      },
+      onCancel: function () {
+        cancelExport();
+      },
+      onDismiss: function () {
+        state.panelUi = null;
+      },
+    });
+    state.panelUi = ui;
+    if (ui.element && !ui.element.parentNode) {
+      document.body.appendChild(ui.element);
+    }
 
     // Tell the user why an export looks short: Pinterest limits board data for
     // signed-out visitors, and nothing in the UI otherwise explains it.
-    if (isGatedPage()) {
+    if (isGatedPage() && ui.element) {
       const notice = document.createElement("div");
       notice.className = "pinsaver-notice";
       notice.textContent =
         "Sign in to Pinterest for the full board — signed out you get only the first page.";
-      panel.appendChild(notice);
+      ui.element.insertBefore(notice, ui.element.firstChild);
     }
 
-    const zipBtn = document.createElement("button");
-    zipBtn.className = "pinsaver-btn";
-    zipBtn.textContent = MSG.BOARD_ZIP;
-    zipBtn.addEventListener("click", function () {
-      downloadBoardZip(false);
-    });
-    panel.appendChild(zipBtn);
+    updateSelectionCount(ui);
+    return ui;
+  }
 
-    const pdfBtn = document.createElement("button");
-    pdfBtn.className = "pinsaver-btn pinsaver-btn--ghost";
-    pdfBtn.textContent = MSG.BOARD_PDF;
-    pdfBtn.addEventListener("click", function () {
-      downloadBoardPdf(false);
-    });
-    panel.appendChild(pdfBtn);
+  /**
+   * Open the manual pin selection dialog.
+   *
+   * The reference product opens a panel that lists every pin of the board with
+   * a checkbox, so any pin can be picked — not only the ones currently
+   * rendered on screen. The list comes from the API, which means it also
+   * covers the pins further down a long board.
+   */
+  async function openSelectionDialog() {
+    if (state.busy) return;
+    const panel = ensurePanel();
+    setPanelStatus(panel, "Loading the board's pins…");
 
-    const selBtn = document.createElement("button");
-    selBtn.className = "pinsaver-btn pinsaver-btn--ghost";
-    selBtn.textContent = MSG.SELECT;
-    selBtn.addEventListener("click", function () {
-      state.selecting = !state.selecting;
-      state.selected.clear();
-      selBtn.textContent = state.selecting ? "Cancel selection" : MSG.SELECT;
-      const selZip = panel.querySelector(".pinsaver-btn--selected-zip");
-      if (selZip) selZip.disabled = !state.selecting;
-      resetSelectionVisuals();
-      if (!state.selecting) {
-        // Drop any status left over from a previous run so the panel is clean.
-        const status = panel.querySelector(".pinsaver-status");
-        if (status) {
-          delete status.dataset.sticky;
-          status.classList.remove("pinsaver-status--error");
+    let dialog = null;
+    try {
+      const pathname = location.pathname.split("?")[0];
+      const boardId = await api.fetchBoardId(pathname, signal());
+      const pins = await api.fetchAllBoardPins(
+        boardId,
+        function (count) {
+          if (dialog) dialog.setStatus("Loaded " + count + " pins…");
+        },
+        signal(),
+      );
+
+      dialog = PK.SelectionUI.open({
+        pins: pins,
+        onConfirm: function (chosen) {
+          state.selectedPins = chosen;
+          state.selected = new Set(
+            chosen.map(function (pin) {
+              return util.pinIdKey(pin.id);
+            }),
+          );
+          updateSelectionCount(panel);
+          markSelectedCards();
+          if (panel && panel.setTab) panel.setTab("Selected");
+          if (!chosen.length) {
+            setPanelStatus(panel, "Nothing selected", true);
+            return;
+          }
+          setPanelStatus(panel, chosen.length + " pin(s) selected — downloading…");
+          downloadBoardZip(true);
+        },
+        onCancel: function () {
+          setPanelStatus(panel, "");
+        },
+      });
+    } catch (err) {
+      setPanelStatus(panel, String(err.message || err), true);
+    }
+  }
+
+  /**
+   * Mark the cards of the picked pins on the page itself, so the user can see
+   * what the dialog selection refers to.
+   */
+  function markSelectedCards() {
+    document.querySelectorAll("[data-pinsaver-picked]").forEach(function (node) {
+      node.removeAttribute("data-pinsaver-picked");
+    });
+    if (!state.selected.size) return;
+    document
+      .querySelectorAll('[data-test-id="pin"], a[href*="/pin/"]')
+      .forEach(function (node) {
+        const id = readPinIdFromNode(node);
+        if (!id) return;
+        if (state.selected.has(util.pinIdKey(id))) {
+          node.setAttribute("data-pinsaver-picked", "1");
         }
-      }
-      updateSelectionCount(panel);
-    });
-    panel.appendChild(selBtn);
-
-    const selZipBtn = document.createElement("button");
-    // Secondary action: only the board export is the primary (red) one.
-    selZipBtn.className = "pinsaver-btn pinsaver-btn--ghost pinsaver-btn--selected-zip";
-    // It only makes sense while selecting, so it stays disabled until then.
-    selZipBtn.disabled = !state.selecting;
-    selZipBtn.textContent = "ZIP selected";
-    selZipBtn.addEventListener("click", function () {
-      if (!state.selected.size) {
-        setPanelStatus(panel, "Nothing selected yet", true);
-        return;
-      }
-      downloadBoardZip(true);
-    });
-    panel.appendChild(selZipBtn);
-
-    const status = document.createElement("div");
-    status.className = "pinsaver-status";
-    panel.appendChild(status);
-
-    document.body.appendChild(panel);
-    return panel;
+      });
   }
 
+  /** Update the "Selected" tab's count. */
   function updateSelectionCount(panel) {
-    const node = panel && panel.querySelector(".pinsaver-status");
-    if (!node) return;
-    if (state.selecting) {
-      node.textContent = state.selected.size + " pin(s) selected";
-    } else if (!node.dataset.sticky) {
-      node.textContent = "";
-    }
+    const ui =
+      panel && typeof panel.setSelectedCount === "function" ? panel : state.panelUi;
+    if (ui) ui.setSelectedCount(state.selected.size);
   }
 
+  /** Show a status line under the panel's content. */
   function setPanelStatus(panel, text, isError) {
-    const node = panel && panel.querySelector(".pinsaver-status");
-    if (!node) return;
-    node.textContent = text;
-    node.dataset.sticky = "1";
-    node.classList.toggle("pinsaver-status--error", !!isError);
+    const ui = panel && typeof panel.setStatus === "function" ? panel : state.panelUi;
+    if (ui) ui.setStatus(text, isError);
   }
 
   /** Attach a download affordance to a pin card. */
@@ -680,10 +839,6 @@
     btn.addEventListener("click", async function (event) {
       event.preventDefault();
       event.stopPropagation();
-      if (state.selecting) {
-        togglePinSelection(node, media, btn);
-        return;
-      }
       btn.disabled = true;
       btn.textContent = "…";
       try {
@@ -705,33 +860,6 @@
     node.appendChild(btn);
   }
 
-  function togglePinSelection(node, media, btn) {
-    const container = pinContainerFor(node) || node;
-
-    // Prefer the real pin id so the API result can be matched back. When the
-    // page does not expose it, key on the canonical media URL instead — never
-    // on a timestamp, which could never match an API pin.
-    const pinId = readPinIdFromNode(container) || readPinIdFromNode(node);
-    const key = pinId
-      ? util.pinIdKey(pinId)
-      : util.mediaKey(media && media.url);
-    if (!key) {
-      btn.title = "Cannot identify this pin";
-      return;
-    }
-
-    if (state.selected.has(key)) {
-      state.selected.delete(key);
-      node.removeAttribute("data-pinsaver-picked");
-      setPinButtonIcon(btn, "download");
-    } else {
-      state.selected.add(key);
-      node.setAttribute("data-pinsaver-picked", "1");
-      setPinButtonIcon(btn, "done");
-    }
-    const panel = document.getElementById(PANEL_ID);
-    updateSelectionCount(panel);
-  }
 
   /**
    * Scan the page and decorate every pin currently rendered.

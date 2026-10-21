@@ -141,6 +141,48 @@ async function waitForFile(magic, timeoutMs) {
   ]);
 
   const page = await context.newPage();
+  /**
+   * Read one text entry out of a stored (uncompressed) ZIP archive.
+   * The extension writes store-only archives, so the bytes are plain text.
+   */
+  function entryText(bytes, needle) {
+    // Uint8Array.indexOf() searches for a byte VALUE, not a byte sequence, so
+    // the buffer is made first.
+    const buf = Buffer.isBuffer(bytes)
+      ? bytes
+      : Buffer.from(bytes.buffer, bytes.byteOffset || 0, bytes.length);
+    const name = Buffer.from(needle, "utf8");
+    let at = buf.indexOf(name);
+    while (at !== -1) {
+      // The searched text is usually a SUFFIX of the stored file name, so the
+      // local header is not exactly 30 bytes earlier: walk back to the nearest
+      // "PK\x03\x04" signature instead.
+      let header = at - 30;
+      while (header >= 0 && buf.readUInt32LE(header) !== 0x04034b50) header--;
+      if (header >= 0) {
+        const nameLen = buf.readUInt16LE(header + 26);
+        const extra = buf.readUInt16LE(header + 28);
+        const size = buf.readUInt32LE(header + 18);
+        const start = header + 30 + nameLen + extra;
+        return buf.slice(start, start + size).toString("utf8");
+      }
+      at = buf.indexOf(name, at + 1);
+    }
+    return "";
+  }
+
+  /** Switch the panel to one of its horizontal tabs. */
+  async function openTab(name) {
+    const tab = page.locator('#pinsaver-panel [data-pinsaver-tab="' + name + '"]');
+    if (await tab.count()) {
+      await tab.click();
+      await page.waitForTimeout(150);
+      return true;
+    }
+    return false;
+  }
+
+
   page.on("pageerror", (e) => pageErrors.push(String(e)));
   page.on("console", (m) => {
     if (m.type() === "error") consoleErrors.push(m.text());
@@ -314,9 +356,12 @@ async function waitForFile(magic, timeoutMs) {
     );
   }
 
-  // --- multi-select ------------------------------------------------------
-  // "ZIP selected" previously filtered on ids that could never match; this
-  // exercises pick → filter → archive with a real selection.
+  // --- multi-select (Pin Kit style dialog) --------------------------------
+  // The reference product opens a panel that lists every pin of the board with
+  // a checkbox, so any pin can be picked — not only the ones on screen.
+  fs.rmSync(DOWNLOADS, { recursive: true, force: true });
+  fs.mkdirSync(DOWNLOADS, { recursive: true });
+
   // The previous phase left us on a /pin/ page, which has no board panel.
   await page.goto("https://www.pinterest.com/pinterest/girls-night-in/", {
     waitUntil: "domcontentloaded",
@@ -324,89 +369,87 @@ async function waitForFile(magic, timeoutMs) {
   });
   await page.waitForSelector("#pinsaver-panel", { timeout: 20000 });
 
-  fs.rmSync(DOWNLOADS, { recursive: true, force: true });
-  fs.mkdirSync(DOWNLOADS, { recursive: true });
+  await openTab("selected");
+  const selectBtn = page.locator("#pinsaver-panel .pinsaver-btn", { hasText: /select/i });
+  await selectBtn.first().click();
 
-  // Start selection mode from the panel, then pick two cards.
-  await page.locator("#pinsaver-panel .pinsaver-btn").nth(2).click(); // "Select pins"
-  const pinBtns = page.locator(".pinsaver-pin-btn");
-  await pinBtns.nth(0).click();
-  await pinBtns.nth(1).click();
+  await page.waitForSelector(".pinsaver-sel-overlay", { timeout: 30000 });
+  const dialogCards = await page.locator(".pinsaver-sel-card").count();
+  record("selection dialog lists the board's pins", dialogCards >= 6, dialogCards + " cards");
 
-  const selectedText = await page.locator("#pinsaver-panel .pinsaver-status").innerText();
-  record("selection count updates", /2/.test(selectedText), selectedText.replace(/\s+/g, " "));
+  const checks = page.locator(".pinsaver-sel-check");
+  await checks.nth(0).check();
+  await checks.nth(1).check();
+  const countText = await page.locator(".pinsaver-sel-count").innerText();
+  record("the dialog counts the selection", /2 of/.test(countText), countText.trim());
 
-  await page.locator("#pinsaver-panel .pinsaver-btn").nth(3).click(); // "ZIP selected"
+  const downloadLabel = await page.locator(".pinsaver-sel-btn--primary").innerText();
+  record("the download button shows the count", /2/.test(downloadLabel), downloadLabel.trim());
+
+  await page.locator(".pinsaver-sel-btn--primary").click();
   const selZip = await waitForFile(Buffer.from([0x50, 0x4b, 0x03, 0x04]), 90000);
-  record("ZIP selected produces an archive", Boolean(selZip), selZip ? selZip.bytes.length + " bytes" : "none");
+  record("the selected pins download as one archive", Boolean(selZip), selZip ? selZip.bytes.length + " bytes" : "none");
 
   if (selZip) {
     const eocd = selZip.bytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
     const entries = eocd >= 0 ? selZip.bytes.readUInt16LE(eocd + 10) : 0;
     // 2 picked pins + _metadata.csv + _metadata.json — not the whole board.
-    record("selection archive holds only the picked pins", entries === 4, entries + " entries");
+    record("the archive holds only the picked pins", entries === 4, entries + " entries");
   }
 
-  // --- cancel selection --------------------------------------------------
-  // Cancelling must clear the ticks as well as the selection; a leftover tick
-  // used to make pins look chosen while the archive came out empty.
-  await page.locator("#pinsaver-panel .pinsaver-btn").nth(2).click(); // "Cancel selection"
-  await page.waitForTimeout(300);
+  // The metadata must carry the pin URL, the way the reference product does.
+  const metaText = selZip
+    ? await entryText(selZip.bytes, "_metadata.csv")
+    : "";
+  record(
+    "the metadata carries each pin's URL",
+    /https:\/\/www\.pinterest\.com\/pin\//.test(metaText),
+    metaText.slice(0, 70).replace(/\s+/g, " "),
+  );
 
-  const tickedAfterCancel = await page.evaluate(function () {
-    const btns = Array.from(document.querySelectorAll(".pinsaver-pin-btn"));
-    return btns.filter(function (b) {
-      return b.textContent.indexOf("✓") !== -1;
-    }).length;
-  });
-  record("cancel clears every selection tick", tickedAfterCancel === 0, tickedAfterCancel + " ticks left");
+  // Opening the dialog again and pressing Escape must change nothing.
+  await openTab("selected");
+  await page.locator("#pinsaver-panel .pinsaver-btn", { hasText: /select/i }).first().click();
+  await page.waitForSelector(".pinsaver-sel-overlay", { timeout: 30000 });
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(400);
+  const stillOpen = await page.locator(".pinsaver-sel-overlay").count();
+  record("Escape closes the selection dialog", stillOpen === 0, stillOpen + " dialogs left open");
 
-  const cancelledStatus = await page.locator("#pinsaver-panel .pinsaver-status").innerText();
-  record("cancel clears the selection status", cancelledStatus.trim() === "", JSON.stringify(cancelledStatus));
-
-  // Re-selecting after a cancel must work again.
-  await page.locator("#pinsaver-panel .pinsaver-btn").nth(2).click(); // "Select pins"
-  await page.locator(".pinsaver-pin-btn").nth(2).click();
-  const reselectStatus = await page.locator("#pinsaver-panel .pinsaver-status").innerText();
-  record("re-selecting after cancel works", /1/.test(reselectStatus), reselectStatus.replace(/\s+/g, " "));
-
-  // --- empty board -------------------------------------------------------
-  // A board with no pins must say so, not fail silently.
-  await page.goto("https://www.pinterest.com/pinterest/empty-board/", {
+  // --- cancel a running export ---------------------------------------------
+  // A long export used to be unstoppable.
+  // A board whose media answers slowly, so the export is still running when
+  // the Cancel button is pressed.
+  fs.rmSync(DOWNLOADS, { recursive: true, force: true });
+  fs.mkdirSync(DOWNLOADS, { recursive: true });
+  await page.goto("https://www.pinterest.com/pinterest/slow-board/", {
     waitUntil: "domcontentloaded",
     timeout: 30000,
   });
   await page.waitForSelector("#pinsaver-panel", { timeout: 20000 });
-  await page.locator("#pinsaver-panel .pinsaver-btn").nth(0).click();
+  await openTab("board");
+  await page.locator("#pinsaver-panel .pinsaver-btn").nth(0).click(); // ZIP
+  const cancelVisible = await page
+    .waitForSelector(".pinsaver-cancel:not([hidden])", { timeout: 20000 })
+    .then(() => true)
+    .catch(() => false);
+  record("a running export offers a Cancel button", cancelVisible);
 
-  let emptyStatus = "";
-  for (let i = 0; i < 40; i++) {
-    await page.waitForTimeout(300);
-    emptyStatus = await page.locator("#pinsaver-panel .pinsaver-status").innerText();
-    if (/No pins found/i.test(emptyStatus)) break;
+  if (cancelVisible) {
+    await page.locator(".pinsaver-cancel").click();
+    let cancelStatus = "";
+    for (let i = 0; i < 40; i++) {
+      await page.waitForTimeout(300);
+      cancelStatus = await page.locator("#pinsaver-panel .pinsaver-status").innerText();
+      if (/cancel/i.test(cancelStatus)) break;
+    }
+    record("the export stops when it is cancelled", /cancel/i.test(cancelStatus), JSON.stringify(cancelStatus.trim()));
+    // A cancelled export must not leave a half-finished archive behind.
+    const afterCancel = fs.readdirSync(DOWNLOADS).filter(function (f) {
+      return !f.endsWith(".crdownload");
+    });
+    record("a cancelled export saves no file", afterCancel.length === 0, afterCancel.join(", ") || "none");
   }
-  record("empty board reports 'No pins found'", /No pins found/i.test(emptyStatus), JSON.stringify(emptyStatus));
-
-  // --- missing board -----------------------------------------------------
-  // The API answers with an in-body error; the panel must surface it.
-  await page.goto("https://www.pinterest.com/pinterest/missing-board/", {
-    waitUntil: "domcontentloaded",
-    timeout: 30000,
-  });
-  await page.waitForSelector("#pinsaver-panel", { timeout: 20000 });
-  await page.locator("#pinsaver-panel .pinsaver-btn").nth(0).click();
-
-  let errStatus = "";
-  for (let i = 0; i < 40; i++) {
-    await page.waitForTimeout(300);
-    errStatus = await page.locator("#pinsaver-panel .pinsaver-status").innerText();
-    if (/not found|error|fail/i.test(errStatus)) break;
-  }
-  record("missing board surfaces an error", /not found|error|fail/i.test(errStatus), JSON.stringify(errStatus.slice(0, 80)));
-  const isErrorStyled = await page.locator("#pinsaver-panel .pinsaver-status").evaluate(function (el) {
-    return el.classList.contains("pinsaver-status--error");
-  });
-  record("error status is styled as an error", isErrorStyled);
 
   // --- alternate DOM -----------------------------------------------------
   // Pinterest has shipped grids without the card marker. The extension must

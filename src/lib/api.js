@@ -166,10 +166,106 @@
   const API_RETRY_ATTEMPTS = 3;
   const API_RETRY_BASE_MS = 300;
 
-  function retryDelay(attempt) {
+  /**
+   * Pause between two pages of a healthy feed.
+   *
+   * Pinterest rate-limits long boards, so every page is followed by a short
+   * break. The break after a *failed* page is longer, so a board that just
+   * answered 429/500 has time to recover before the next request.
+   */
+  const PAGE_PAUSE_MS = 120;
+  const FAILED_PAGE_PAUSE_MS = 1000;
+
+  /**
+   * How often a single page is attempted at the pagination level.
+   *
+   * `callResource` already retries three times; this is the last chance for
+   * a page that kept failing, because giving up on a page costs the user
+   * every pin behind it.
+   */
+  const PAGE_FETCH_ATTEMPTS = 2;
+
+  /**
+   * Wait `ms`. An aborted signal cuts the wait short, so a cancelled export
+   * does not sit through a backoff timer.
+   */
+  function sleep(ms, signal) {
     return new Promise(function (resolve) {
-      setTimeout(resolve, API_RETRY_BASE_MS * Math.pow(2, attempt - 1));
+      if (signal && signal.aborted) {
+        resolve();
+        return;
+      }
+      let timer = null;
+      function cleanup() {
+        if (signal && typeof signal.removeEventListener === "function") {
+          signal.removeEventListener("abort", onAbort);
+        }
+      }
+      function onAbort() {
+        if (timer !== null) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        cleanup();
+        resolve();
+      }
+      if (signal && typeof signal.addEventListener === "function") {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+      timer = setTimeout(function () {
+        timer = null;
+        cleanup();
+        resolve();
+      }, ms);
     });
+  }
+
+  /** The canonical abort error for a cancelled export. */
+  function abortError(signal) {
+    const reason = signal && signal.reason;
+    if (reason && typeof reason === "object" && reason.name === "AbortError") {
+      return reason;
+    }
+    const err = new Error("The operation was aborted");
+    err.name = "AbortError";
+    err.code = "ABORT_ERR";
+    return err;
+  }
+
+  /**
+   * Is this failure an abort?
+   *
+   * An abort is a deliberate stop by the caller, never a tolerable page
+   * failure, so it has to be re-thrown instead of being reported as a
+   * skipped page.
+   */
+  function isAbortError(err, signal) {
+    if (signal && signal.aborted) return true;
+    if (!err) return false;
+    if (err.name === "AbortError") return true;
+    if (err.code === "ABORT_ERR") return true;
+    return false;
+  }
+
+  /**
+   * Is this failure worth another attempt?
+   *
+   * 5xx and 429 are transient server answers and a dropped connection is
+   * transient as well, so both are worth another try. A 4xx is a permanent
+   * answer, and so is an in-body API error (`retryable: false`): the board
+   * does not exist, and retrying cannot change that.
+   */
+  function isTransientFailure(err) {
+    if (!err) return false;
+    if (err.retryable === false) return false;
+    const status = err.status;
+    if (status === undefined || status === null) return true;
+    if (status === 429) return true;
+    return status >= 500;
+  }
+
+  function retryDelay(attempt, signal) {
+    return sleep(API_RETRY_BASE_MS * Math.pow(2, attempt - 1), signal);
   }
 
   async function callResource(resource, sourceUrl, options, opts) {
@@ -195,12 +291,15 @@
         return body;
       } catch (err) {
         lastError = err;
+        // An abort is a deliberate stop, not a failure: it is never retried
+        // and never reported as a broken page.
+        if (isAbortError(err, settings.signal)) throw err;
         const status = err && err.status;
         const retryable =
           err && err.retryable !== false &&
-          (status === undefined || status >= 500 || status === 429);
+          (status === undefined || status === null || status >= 500 || status === 429);
         if (!retryable || attempt === API_RETRY_ATTEMPTS) break;
-        await retryDelay(attempt);
+        await retryDelay(attempt, settings.signal);
       }
     }
     throw lastError;
@@ -249,10 +348,39 @@
         const data = body.resource_response && body.resource_response.data;
         if (data && data.id != null) return String(data.id);
       } catch (err) {
+        // A cancelled export must not be mistaken for a missing board.
+        if (isAbortError(err, signal)) throw err;
         lastError = err;
       }
     }
     throw lastError || new Error("Could not resolve board id");
+  }
+
+  /**
+   * Fetch one page, retrying once after a longer pause when the failure is
+   * transient.
+   *
+   * `callResource` already retries three times; this is the last chance for a
+   * page that kept failing. The re-thrown error is the last one the server
+   * produced, so a page that finally answered "not found" is not reported as
+   * a 500. An abort is never swallowed here.
+   */
+  async function fetchPageWithRecovery(fetchPage, signal) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= PAGE_FETCH_ATTEMPTS; attempt++) {
+      if (signal && signal.aborted) throw abortError(signal);
+      try {
+        return await fetchPage();
+      } catch (err) {
+        if (isAbortError(err, signal)) throw err;
+        lastError = err;
+        if (attempt >= PAGE_FETCH_ATTEMPTS || !isTransientFailure(err)) break;
+        // A longer pause than between healthy pages: the board may be
+        // rate-limiting us right now.
+        await sleep(FAILED_PAGE_PAUSE_MS, signal);
+      }
+    }
+    throw lastError;
   }
 
   /** Read one page of board pins. Returns { pins, bookmark }. */
@@ -384,13 +512,32 @@
     return { pins: pins, bookmark: next && next !== "-end-" ? String(next) : null };
   }
 
-  /** Every pin of one section, with `sectionPath` attached for folder naming. */
-  async function fetchSectionPins(boardId, section, signal) {
+  /**
+   * Every pin of one section, with `sectionPath` attached for folder naming.
+   *
+   * A page that cannot be read ends this section's pagination, but the pins
+   * already collected are returned: losing one page of a section must not
+   * lose the whole board. `onError` is called with the failure so the caller
+   * can report what was skipped.
+   */
+  async function fetchSectionPins(boardId, section, signal, onError) {
     const out = [];
     const seen = new Set();
     let bookmark = null;
     for (;;) {
-      const res = await fetchSectionPinPage(boardId, section, bookmark, signal);
+      let res = null;
+      try {
+        res = await fetchPageWithRecovery(
+          function () {
+            return fetchSectionPinPage(boardId, section, bookmark, signal);
+          },
+          signal,
+        );
+      } catch (err) {
+        if (isAbortError(err, signal)) throw err;
+        if (typeof onError === "function") onError(err, section);
+        break;
+      }
       for (const pin of res.pins) {
         const key = String(pin.id);
         if (seen.has(key)) continue;
@@ -399,9 +546,7 @@
       }
       if (!res.bookmark) break;
       bookmark = res.bookmark;
-      await new Promise(function (r) {
-        setTimeout(r, 120);
-      });
+      await sleep(PAGE_PAUSE_MS, signal);
     }
     return out;
   }
@@ -423,6 +568,13 @@
    * Pins returned by the plain board feed carry no section information, so
    * boards that have sections are read section by section; that is the only
    * way a pin can be attributed to the folder it belongs in.
+   *
+   * A page that cannot be read never ends the export: the pins collected so
+   * far are kept, the feed that failed stops there, and the failure is
+   * reported through `onProgress(count, page, error)`. Callers that only read
+   * the first two arguments keep working unchanged. An abort is re-thrown
+   * instead of being reported, because a cancelled export is not a skipped
+   * page.
    */
   async function fetchAllBoardPins(boardId, onProgress, signal) {
     const all = [];
@@ -440,34 +592,62 @@
     let bookmark = null;
     let page = 0;
     for (;;) {
-      const res = await fetchBoardPinPage(boardId, bookmark, signal);
+      let res = null;
+      try {
+        res = await fetchPageWithRecovery(
+          function () {
+            return fetchBoardPinPage(boardId, bookmark, signal);
+          },
+          signal,
+        );
+      } catch (err) {
+        if (isAbortError(err, signal)) throw err;
+        // The page is lost, the pins in front of it are not.
+        if (onProgress) onProgress(all.length, page + 1, err);
+        break;
+      }
       page++;
       for (const pin of res.pins) add(pin);
       if (onProgress) onProgress(all.length, page);
       if (!res.bookmark) break;
       bookmark = res.bookmark;
       // Small pause keeps Pinterest from rate-limiting long boards.
-      await new Promise(function (r) {
-        setTimeout(r, 120);
-      });
+      await sleep(PAGE_PAUSE_MS, signal);
     }
 
     // 2. Sectioned pins, tagged with the folder they belong to.
     let sections = [];
     try {
       sections = await fetchBoardSections(boardId, signal);
-    } catch (_) {
-      sections = []; // sections are an enhancement, never a hard failure
+    } catch (err) {
+      if (isAbortError(err, signal)) throw err;
+      // Sections are an enhancement, never a hard failure: the board feed
+      // already carries every pin, so a missing section list only costs the
+      // folder attribution, not a pin. Nothing is skipped, so nothing is
+      // reported.
+      sections = [];
     }
 
     for (const section of sections) {
+      let sectionError = null;
       try {
-        const pins = await fetchSectionPins(boardId, section, signal);
+        const pins = await fetchSectionPins(
+          boardId,
+          section,
+          signal,
+          function (err) {
+            sectionError = err;
+          },
+        );
         for (const pin of pins) add(pin);
-      } catch (_) {
-        // A single unreadable section must not abort the whole board.
+      } catch (err) {
+        if (isAbortError(err, signal)) throw err;
+        sectionError = err;
       }
-      if (onProgress) onProgress(all.length, page + 1);
+      if (onProgress) {
+        if (sectionError) onProgress(all.length, page + 1, sectionError);
+        else onProgress(all.length, page + 1);
+      }
     }
 
     return all;
@@ -488,6 +668,8 @@
     fetchBoardSections: fetchBoardSections,
     PAGE_SIZE: PAGE_SIZE,
     SECTION_PAGE_SIZE: SECTION_PAGE_SIZE,
+    PAGE_PAUSE_MS: PAGE_PAUSE_MS,
+    FAILED_PAGE_PAUSE_MS: FAILED_PAGE_PAUSE_MS,
     fetchSectionPins: fetchSectionPins,
     fetchSectionPinPage: fetchSectionPinPage,
     withSection: withSection,

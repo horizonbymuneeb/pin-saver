@@ -39,8 +39,10 @@ function isAllowedMediaUrl(raw) {
 /**
  * Fetch media with a Pinterest referer so the CDN treats it as an in-site
  * request. Returns the raw bytes.
+ *
+ * `signal` is optional and is only used to abort an in-flight request.
  */
-async function fetchMedia(url, isVideo) {
+async function fetchMedia(url, isVideo, signal) {
   const headers = isVideo
     ? {
         Accept: "video/mp4,video/*;q=0.9,*/*;q=0.8",
@@ -67,6 +69,7 @@ async function fetchMedia(url, isVideo) {
     headers: headers,
     credentials: "omit",
     mode: "cors",
+    signal: signal,
   });
   if (!res.ok) {
     throw new Error("Media HTTP " + res.status + " for " + url);
@@ -97,26 +100,231 @@ async function fetchMedia(url, isVideo) {
 const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_MS = 250;
 
-function sleep(ms) {
-  return new Promise(function (resolve) {
-    setTimeout(resolve, ms);
+/**
+ * Wait for `ms`, but wake up early if the request is cancelled.
+ *
+ * `signal` is optional, so a plain `sleep(ms)` still works. When a signal is
+ * given and it aborts, the wait rejects with an AbortError instead of
+ * running out the rest of the backoff.
+ */
+function sleep(ms, signal) {
+  return new Promise(function (resolve, reject) {
+    if (signal && signal.aborted) {
+      reject(makeAbortError());
+      return;
+    }
+    const onAbort = function () {
+      clearTimeout(timer);
+      reject(makeAbortError());
+    };
+    const timer = setTimeout(function () {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 
-async function fetchMediaWithRetry(url, isVideo) {
+/** An error shaped like the DOMException a real `AbortController` produces. */
+function makeAbortError() {
+  const err = new Error("The operation was aborted.");
+  err.name = "AbortError";
+  return err;
+}
+
+/** True when an error is an abort (as opposed to a genuine fetch failure). */
+function isAbortError(err) {
+  if (!err) return false;
+  if (err.name === "AbortError") return true;
+  // DOMException exposes ABORT_ERR as the legacy numeric code 20.
+  return err.code === 20 || err.code === "ABORT_ERR";
+}
+
+async function fetchMediaWithRetry(url, isVideo, signal) {
   let lastError = null;
   for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    // A cancelled request is never started and never retried.
+    if (signal && signal.aborted) throw makeAbortError();
     try {
-      return await fetchMedia(url, isVideo);
+      return await fetchMedia(url, isVideo, signal);
     } catch (err) {
       lastError = err;
       const message = String(err && err.message ? err.message : err);
       const permanent = /HTTP 404|Refusing non-Pinterest/.test(message);
-      if (permanent || attempt === RETRY_ATTEMPTS) break;
-      await sleep(RETRY_BASE_MS * Math.pow(2, attempt - 1));
+      // An abort is the user asking to stop: retrying it would be wrong.
+      if (
+        permanent ||
+        isAbortError(err) ||
+        (signal && signal.aborted) ||
+        attempt === RETRY_ATTEMPTS
+      ) {
+        break;
+      }
+      await sleep(RETRY_BASE_MS * Math.pow(2, attempt - 1), signal);
     }
   }
   throw lastError;
+}
+
+/**
+ * The file extension a media URL implies.
+ *
+ * Mirrors `util.extensionFor` in the content-script bundle; the worker cannot
+ * import that file, so the rule is duplicated here on purpose.
+ */
+function mediaExtensionFor(url, isVideo) {
+  if (isVideo) return "mp4";
+  const m = String(url || "").match(
+    /\.(jpe?g|png|gif|webp|avif|mp4|mov|webm)(\?|$)/i,
+  );
+  if (!m) return "jpg";
+  const ext = m[1].toLowerCase();
+  if (ext === "jpeg") return "jpg";
+  return ext;
+}
+
+// ---------------------------------------------------------------------------
+// Batched media fetching
+//
+// The "Slow Archiving" bug was a shape problem, not a network problem: the
+// content script asked the worker for one pin at a time and waited for the
+// bytes before starting the next one, so a 500-pin board cost 500 strictly
+// serial round trips.
+//
+// `fetchMediaBatch` answers several pins per message and runs them
+// concurrently inside the worker, with a bounded number of requests in flight
+// so a big board cannot flood the CDN (and so no single reply carries
+// hundreds of megabytes of base64).
+// ---------------------------------------------------------------------------
+
+/** How many media requests may be in flight at the same time. */
+const BATCH_CONCURRENCY = 8;
+
+/**
+ * The largest batch a single message may carry.
+ *
+ * A caller should aim for `BATCH_CONCURRENCY` items per message, which maps
+ * one-to-one onto the concurrency window. The hard limit exists so a caller
+ * cannot accidentally ask for a whole 500-pin board in one reply and blow up
+ * the message size.
+ */
+const MAX_BATCH_ITEMS = 32;
+
+/** Every media request that is currently in flight, so it can be aborted. */
+const inFlightControllers = new Set();
+
+/**
+ * Cancellation generation.
+ *
+ * `cancelFetch` bumps this counter, so a batch that was already running can
+ * tell that it must not start any further requests, even the ones still
+ * queued behind the concurrency window.
+ */
+let cancelEpoch = 0;
+
+function registerInFlight(controller) {
+  inFlightControllers.add(controller);
+}
+
+function unregisterInFlight(controller) {
+  inFlightControllers.delete(controller);
+}
+
+/**
+ * Abort every in-flight media request.
+ *
+ * Returns how many requests were aborted. Aborted items surface as a
+ * per-item `{ ok: false, error: "cancelled" }` rather than as a hung promise.
+ */
+function cancelInFlightFetches() {
+  cancelEpoch += 1;
+  let count = 0;
+  inFlightControllers.forEach(function (controller) {
+    if (controller.signal.aborted) return;
+    try {
+      controller.abort();
+      count += 1;
+    } catch (_) {
+      // A controller that refuses to abort is simply left alone.
+    }
+  });
+  return count;
+}
+
+/**
+ * Fetch one item of a batch.
+ *
+ * Never rejects: a failing item becomes `{ ok: false, error }` in place, so a
+ * single broken pin can never abort a whole board.
+ */
+async function fetchBatchItem(item, epoch) {
+  const url = item && typeof item.url === "string" ? item.url : "";
+  const isVideo = !!(item && item.isVideo);
+
+  if (!isAllowedMediaUrl(url)) {
+    return { ok: false, error: "Refusing non-Pinterest media URL" };
+  }
+
+  const key = url;
+  if (blobCache.has(key)) {
+    const cached = blobCache.get(key);
+    return {
+      ok: true,
+      data: bytesToBase64(cached),
+      size: cached.byteLength,
+      ext: mediaExtensionFor(url, isVideo),
+    };
+  }
+
+  const controller = new AbortController();
+  registerInFlight(controller);
+  try {
+    // The batch was cancelled before this item got its turn: do not start it.
+    if (epoch !== cancelEpoch || controller.signal.aborted) {
+      return { ok: false, error: "cancelled" };
+    }
+    const bytes = await fetchMediaWithRetry(url, isVideo, controller.signal);
+    if (bytes.byteLength < 4 * 1024 * 1024) cachePut(key, bytes);
+    return {
+      ok: true,
+      data: bytesToBase64(bytes),
+      size: bytes.byteLength,
+      ext: mediaExtensionFor(url, isVideo),
+    };
+  } catch (err) {
+    if (controller.signal.aborted || isAbortError(err)) {
+      return { ok: false, error: "cancelled" };
+    }
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  } finally {
+    unregisterInFlight(controller);
+  }
+}
+
+/**
+ * Run a batch with a bounded number of workers.
+ *
+ * The returned array has the same length and the same order as `items`, no
+ * matter in which order the individual requests finish.
+ */
+async function runBatch(items, epoch) {
+  const results = new Array(items.length);
+  let cursor = 0;
+
+  async function worker() {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      results[index] = await fetchBatchItem(items[index], epoch);
+    }
+  }
+
+  const workers = [];
+  const count = Math.min(BATCH_CONCURRENCY, items.length);
+  for (let i = 0; i < count; i++) workers.push(worker());
+  await Promise.all(workers);
+  return results;
 }
 
 /** Start a download from an already-built data URL. */
@@ -208,15 +416,63 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: true, data: bytesToBase64(blobCache.get(key)), cached: true });
       return false;
     }
-    fetchMediaWithRetry(url, !!message.isVideo)
+    // Registered so `cancelFetch` can abort this request too.
+    const controller = new AbortController();
+    registerInFlight(controller);
+    fetchMediaWithRetry(url, !!message.isVideo, controller.signal)
       .then((bytes) => {
         if (bytes.byteLength < 4 * 1024 * 1024) cachePut(key, bytes);
         sendResponse({ ok: true, data: bytesToBase64(bytes), size: bytes.byteLength });
       })
       .catch((err) => {
+        if (controller.signal.aborted || isAbortError(err)) {
+          sendResponse({ ok: false, error: "cancelled" });
+          return;
+        }
+        sendResponse({ ok: false, error: String(err && err.message ? err.message : err) });
+      })
+      .finally(() => {
+        unregisterInFlight(controller);
+      });
+    return true; // async response
+  }
+
+  if (action === "fetchMediaBatch") {
+    const items = message.items;
+    if (!Array.isArray(items)) {
+      sendResponse({ ok: false, error: "fetchMediaBatch requires an items array" });
+      return false;
+    }
+    if (items.length > MAX_BATCH_ITEMS) {
+      sendResponse({
+        ok: false,
+        error:
+          "Batch too large: " +
+          items.length +
+          " items (max " +
+          MAX_BATCH_ITEMS +
+          " per message, " +
+          BATCH_CONCURRENCY +
+          " recommended)",
+      });
+      return false;
+    }
+    const epoch = cancelEpoch;
+    runBatch(items, epoch)
+      .then((results) => {
+        // `results` is the same length and in the same order as `items`.
+        sendResponse({ ok: true, results: results });
+      })
+      .catch((err) => {
         sendResponse({ ok: false, error: String(err && err.message ? err.message : err) });
       });
     return true; // async response
+  }
+
+  if (action === "cancelFetch") {
+    const aborted = cancelInFlightFetches();
+    sendResponse({ ok: true, aborted: aborted });
+    return false;
   }
 
   if (action === "fetchText") {

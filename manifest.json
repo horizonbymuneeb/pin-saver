@@ -39,6 +39,8 @@
       ],
       "js": [
         "src/lib/util.js",
+        "src/panel-ui.js",
+        "src/selection-ui.js",
         "src/lib/zip.js",
         "src/lib/pdf.js",
         "src/lib/video.js",
@@ -46,7 +48,8 @@
         "src/content.js"
       ],
       "css": [
-        "src/content.css"
+        "src/content.css",
+        "src/selection-ui.css"
       ],
       "run_at": "document_idle",
       "all_frames": false

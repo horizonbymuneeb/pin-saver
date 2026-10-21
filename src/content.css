@@ -160,3 +160,209 @@
   font-size: 11px;
   line-height: 1.45;
 }
+
+/* ------------------------------------------------------------------
+   Tabbed panel
+   The strip sits across the top of the floating panel and holds the
+   three tabs plus the close button. The negative margins pull it out
+   of the panel padding so the active tab merges with the body below.
+   ------------------------------------------------------------------ */
+
+.pinsaver-panel[hidden] {
+  display: none;
+}
+
+.pinsaver-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  margin: -14px -14px 10px;
+  padding: 6px 8px 0 6px;
+  border-radius: 14px 14px 0 0;
+  background: #efefef;
+}
+
+.pinsaver-tabs__list {
+  display: flex;
+  /* Stretch, so the tab carrying the count badge is exactly as tall as
+     the others and all three share one horizontal line. */
+  align-items: stretch;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  /* A narrow viewport must never break the strip apart. */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.pinsaver-tabs__list::-webkit-scrollbar {
+  display: none;
+}
+
+.pinsaver-tab {
+  appearance: none;
+  position: relative;
+  flex: 0 0 auto;
+  padding: 8px;
+  border: none;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: #555555;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pinsaver-tab:hover {
+  color: #111111;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.pinsaver-tab:focus-visible {
+  outline: 2px solid #e60023;
+  outline-offset: -2px;
+}
+
+/* The active tab is a white card sitting on the grey track, with the
+   brand red on the label and a red rule along the bottom edge. The rule
+   is a pseudo-element so it does not change the tab's box and break the
+   horizontal alignment of the strip. */
+.pinsaver-tab--active {
+  background: #ffffff;
+  color: #e60023;
+  box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.pinsaver-tab--active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: #e60023;
+}
+
+/* Selected-pin counter, shown on the "Selected" tab. */
+.pinsaver-tab__count {
+  display: inline-block;
+  min-width: 16px;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #d6d6d6;
+  color: #444444;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  vertical-align: 1px;
+}
+
+.pinsaver-tab--active .pinsaver-tab__count {
+  background: #e60023;
+  color: #ffffff;
+}
+
+/* Dismiss button, top-right of the strip. */
+.pinsaver-tabs__close {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin: 0 0 4px auto;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #777777;
+  font-size: 16px;
+  line-height: 20px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.pinsaver-tabs__close:hover {
+  background: #e2e2e2;
+  color: #111111;
+}
+
+.pinsaver-tabs__close:focus-visible {
+  outline: 2px solid #e60023;
+  outline-offset: 1px;
+}
+
+/* --------------------------------------------------------------- body */
+
+.pinsaver-panel__body {
+  margin: 0;
+}
+
+.pinsaver-panel__tab {
+  display: block;
+}
+
+.pinsaver-panel__tab[hidden] {
+  display: none;
+}
+
+/* "Selected" tab: how many pins are picked. */
+.pinsaver-selected__count {
+  margin-bottom: 8px;
+  color: #555555;
+  font-size: 12px;
+}
+
+.pinsaver-selected__num {
+  font-weight: 700;
+  color: #111111;
+}
+
+/* "About" tab. */
+.pinsaver-about__text {
+  margin: 0 0 8px;
+  color: #333333;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pinsaver-about__version {
+  margin: 0 0 8px;
+  color: #555555;
+  font-size: 12px;
+}
+
+.pinsaver-about__version-value {
+  font-weight: 700;
+  color: #111111;
+}
+
+.pinsaver-about__privacy {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #f6f6f6;
+  color: #555555;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Busy-only cancel button. It sits between the tab content and the
+   status line and is hidden entirely when nothing is running. */
+.pinsaver-cancel {
+  margin-bottom: 6px;
+  background: #ffffff;
+  color: #e60023;
+  box-shadow: inset 0 0 0 1px #e60023;
+}
+
+.pinsaver-cancel:hover {
+  filter: none;
+  background: #fff1f3;
+}
+
+.pinsaver-cancel[hidden] {
+  display: none;
+}
