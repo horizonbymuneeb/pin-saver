@@ -1,8 +1,16 @@
 # Pin Saver — Pinterest board downloader
 
+[![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Install-4285F4?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/pin-saver-pinterest-board/jdfjeiajmielkjbeoafnekpppdlpjkeg)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue)](https://github.com/horizonbymuneeb/pin-saver/releases/tag/v1.0.0)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 A working Pinterest board/pin downloader for Chrome (Manifest V3).
 Independent clean-room implementation; see [`../SPEC.md`](../SPEC.md) for the
 behavioural specification and the reasoning behind each design choice.
+
+**[Install from the Chrome Web Store](https://chromewebstore.google.com/detail/pin-saver-pinterest-board/jdfjeiajmielkjbeoafnekpppdlpjkeg)**
+· **[Latest release (ZIP)](https://github.com/horizonbymuneeb/pin-saver/releases/latest)**
+· **[Privacy policy](https://horizonbymuneeb.github.io/pin-saver-privacy/)**
 
 ## What it does
 
@@ -28,7 +36,12 @@ No account, no sign-in, no limits.
 
 ## Install (30 seconds)
 
-### From the packaged archive (recommended)
+### From the Chrome Web Store (easiest)
+
+[**Add to Chrome →**](https://chromewebstore.google.com/detail/pin-saver-pinterest-board/jdfjeiajmielkjbeoafnekpppdlpjkeg)
+— one click, and it auto-updates. Works in Chrome, Edge and Brave.
+
+### From the packaged archive (manual, no store)
 
 ```bash
 npm run package          # builds ../pin-saver-extension.zip (19 files)
@@ -45,7 +58,7 @@ The packaged copy is verified: the browser test suite passes against the
 
 ### From source
 
-Same steps, but select this `my-version` folder directly. Everything under
+Same steps, but select this repository folder directly. Everything under
 `test/`, `scripts/` and `node_modules/` is ignored by Chrome.
 
 If the panel does not appear, reload the Pinterest tab once — content scripts
